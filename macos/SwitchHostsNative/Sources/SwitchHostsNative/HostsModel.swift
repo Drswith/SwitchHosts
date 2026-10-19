@@ -8,7 +8,11 @@ import UniformTypeIdentifiers
 @MainActor
 final class HostsModel: ObservableObject {
     @Published private(set) var tree: [HostsNode] = []
+    /// The entry shown in the editor.
     @Published var selection: String?
+    /// Every selected sidebar row. Usually just `selection`; several rows can be
+    /// selected with ⌘ and ⇧, as in 5.0.2, to move them to the trash together.
+    @Published private(set) var selectedIDs: Set<String> = []
     @Published var content: String = ""
     @Published private(set) var trashItems: [TrashItem] = []
     @Published var showTrash = false
@@ -20,8 +24,8 @@ final class HostsModel: ObservableObject {
     @Published var showFind = false
     @Published var showImportURL = false
     @Published var showHistory = false
-    /// Set by the menu to open the new-entry sheet; the window clears it.
-    @Published var newEntryRequest: NewEntryRequest?
+    /// The entry being created or edited; the window shows the entry sheet while set.
+    @Published var entryPrompt: EntryPrompt?
     /// Set when a find result is shown; the editor selects and scrolls to it.
     @Published var reveal: EditorReveal?
     /// The address of a URL import that failed, so the error bar can retry it.
@@ -37,11 +41,6 @@ final class HostsModel: ObservableObject {
     @Published var rightPanelShown = false
     @Published var leftPanelWidth: Double = 270
     @Published var rightPanelWidth: Double = 240
-
-    enum NewEntryRequest: Equatable {
-        case local
-        case remote
-    }
 
     /// Last content read from or written to the core for the selected entry.
     private(set) var savedContent: String = ""
@@ -67,15 +66,76 @@ final class HostsModel: ObservableObject {
             // Preferences that affect the process itself, applied at launch.
             let hideDock = try await core.call(Bool.self, "config_get", ["hide_dock_icon"])
             DockIcon.apply(hidden: hideDock)
+            AppTheme.apply((try? await core.call(String.self, "config_get", ["theme"])) ?? "system")
             eventTask = Task { [weak self] in
                 for await event in core.events where Self.treeChangingEvents.contains(event.name) {
                     await self?.reload()
                 }
             }
             await reload()
+            await recoverDataDirIfNeeded()
             await applyStartupPreferences(core)
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// When the recorded data folder could not be used at launch, asks what to
+    /// do, as 5.0.2's recovery dialog does: use the default location, choose a
+    /// new folder, or quit. Both fixes restart the app. The question repeats
+    /// until one of them takes effect.
+    private func recoverDataDirIfNeeded() async {
+        guard let status = await dataDirStatus(), let kind = status.recoveryKind else { return }
+        while true {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            if kind == "invalid" {
+                alert.messageText = String(localized: "Data Location Unreadable")
+                alert.informativeText = String(localized: "SwitchHosts could not determine where your data is stored because the saved location record is damaged. Your data has not been changed. Please choose how to proceed.")
+            } else {
+                alert.messageText = String(localized: "Data Directory Not Found")
+                alert.informativeText = String(localized: "The data directory could not be found. It may have been moved or deleted. Please choose how to proceed.")
+                if let path = status.recoveryPath {
+                    alert.informativeText += "\n\n" + path
+                }
+            }
+            alert.informativeText += "\n\n" + String(localized: "Default location: \(status.defaultDir)")
+            alert.addButton(withTitle: String(localized: "Use Default Location"))
+            alert.addButton(withTitle: String(localized: "Choose New Folder…"))
+            alert.addButton(withTitle: String(localized: "Quit"))
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                if await resetDataDir() {
+                    AppRelaunch.restart()
+                    return
+                }
+            case .alertSecondButtonReturn:
+                let panel = NSOpenPanel()
+                panel.canChooseFiles = false
+                panel.canChooseDirectories = true
+                panel.canCreateDirectories = true
+                panel.allowsMultipleSelection = false
+                panel.prompt = String(localized: "Choose")
+                guard panel.runModal() == .OK, let url = panel.url,
+                      let plan = await planDataDir(url) else { continue }
+                // The old folder is gone, so there is nothing to copy. Picking the
+                // default location is a reset, as in 5.0.2.
+                let restart = plan.isDefault ? await resetDataDir() : await applyDataDir(url, copy: false)
+                if restart {
+                    AppRelaunch.restart()
+                    return
+                }
+            default:
+                NSApp.terminate(nil)
+                return
+            }
+            // A failed fix is shown in the error bar; ask again.
+            if let message = errorMessage {
+                let failed = NSAlert()
+                failed.messageText = String(localized: "Failed")
+                failed.informativeText = message
+                failed.runModal()
+            }
         }
     }
 
@@ -152,10 +212,35 @@ final class HostsModel: ObservableObject {
     /// Whether the selection is a folder (shown with its settings, not content).
     var isFolderSelected: Bool { selectedNode?.isFolder == true }
 
+    /// Applies a sidebar selection of one or more rows. The row added last
+    /// becomes the entry in the editor. The system hosts row is never part of
+    /// a multiple selection.
+    func changeSelection(to ids: Set<String>) async {
+        var ids = ids
+        let added = ids.subtracting(selectedIDs)
+        if added.contains(Self.systemHostsID) {
+            ids = [Self.systemHostsID]
+        } else if ids.count > 1 {
+            ids.remove(Self.systemHostsID)
+        }
+        let primary = added.first(where: ids.contains)
+            ?? (selection.map(ids.contains) == true ? selection : ids.first)
+        if primary != selection {
+            await select(primary)
+            guard selection == primary else {
+                // The user kept unsaved edits; the old selection stays.
+                selectedIDs = selection.map { [$0] } ?? []
+                return
+            }
+        }
+        selectedIDs = ids
+    }
+
     /// Select an entry and load its content. Folders have no content of their own.
     func select(_ id: String?) async {
         guard await confirmDiscardIfDirty() else { return }
         selection = id
+        selectedIDs = id.map { [$0] } ?? []
         if id == Self.systemHostsID {
             await loadSystemHosts()
             return
@@ -165,7 +250,8 @@ final class HostsModel: ObservableObject {
             savedContent = ""
             return
         }
-        if (node["type"] as? String) == "folder" {
+        // Folders and groups have no content of their own.
+        if ["folder", "group"].contains(node["type"] as? String) {
             content = ""
             savedContent = ""
             return
@@ -187,7 +273,8 @@ final class HostsModel: ObservableObject {
     }
 
     func saveContent() async {
-        guard let core, let id = selection, !isSystemHostsSelected, !isRemoteSelected, !isFolderSelected else { return }
+        // Only local entries are edited by hand; the rest are read-only, as in 5.0.2.
+        guard let core, let id = selection, selectedNode?.isLocal == true else { return }
         do {
             try await core.send("set_hosts_content", [id, content])
             savedContent = content
@@ -226,6 +313,12 @@ final class HostsModel: ObservableObject {
     /// applies the same folder and choice-mode rules the renderer uses.
     func toggle(_ node: HostsNode) async {
         guard let core else { return }
+        // With no write mode saved yet, ask for one first, as 5.0.2 does; the
+        // switch then goes ahead with the chosen mode.
+        if (await loadConfig()["write_mode"] as? String ?? "").isEmpty {
+            guard let mode = askWriteMode() else { return }
+            await updateConfig(["write_mode": mode])
+        }
         do {
             try await core.send("toggle_item", [node.id])
             errorMessage = nil
@@ -235,24 +328,81 @@ final class HostsModel: ObservableObject {
         await reload()
     }
 
+    /// "append" or "overwrite", or nil when the user cancels.
+    private func askWriteMode() -> String? {
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Set Write Mode")
+        alert.informativeText = String(localized: "Append") + ": " + String(localized: "Append the new records to the end of the system hosts file.")
+            + "\n" + String(localized: "Overwrite") + ": " + String(localized: "Overwrite the system hosts file with the new records.")
+        alert.addButton(withTitle: String(localized: "Append"))
+        alert.addButton(withTitle: String(localized: "Overwrite"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return "append"
+        case .alertSecondButtonReturn: return "overwrite"
+        default: return nil
+        }
+    }
+
     // ---- tree edits --------------------------------------------------------
     // Read the tree as JSON, edit it, and write it back with the read as the
     // guard. The core rejects the write if the tree changed in between.
 
-    func addLocal(title: String) async {
+    /// Creates an entry of any kind inside the selected folder, or at the top
+    /// level. A new remote entry is fetched straight away.
+    func addEntry(_ draft: EntryDraft) async {
         await editTree { list in
             let id = UUID().uuidString
             let parent = self.selectedFolderID(in: list)
-            guard TreeDocument.appendLocal(id: id, title: title, parentID: parent, to: &list) else {
+            let added: Bool
+            switch draft.kind {
+            case .local:
+                added = TreeDocument.appendLocal(id: id, title: draft.title, parentID: parent, to: &list)
+            case .remote:
+                added = TreeDocument.appendRemote(
+                    id: id,
+                    title: draft.title,
+                    url: draft.url,
+                    domains: draft.domains,
+                    refreshInterval: draft.refreshInterval,
+                    parentID: parent,
+                    to: &list
+                )
+            case .group:
+                added = TreeDocument.appendGroup(id: id, title: draft.title, include: draft.include, parentID: parent, to: &list)
+            case .folder:
+                added = TreeDocument.appendFolder(id: id, title: draft.title, folderMode: draft.folderMode, parentID: parent, to: &list)
+            }
+            guard added else {
                 throw SwhError.command(String(localized: "Select a folder to add into, or select nothing for the top level."))
             }
             return id
         }
+        if draft.kind == .remote, let id = selection, selectedNode?.isRemote == true {
+            _ = await refreshRemote(id)
+        }
     }
 
-    func rename(_ id: String, to title: String) async {
+    /// Saves the sheet's fields for an existing entry. The kind does not change,
+    /// as in 5.0.2.
+    func updateEntry(_ id: String, _ draft: EntryDraft) async {
         await editTree { list in
-            guard TreeDocument.rename(id, to: title, in: &list) else {
+            guard TreeDocument.rename(id, to: draft.title, in: &list) else {
+                throw SwhError.command(String(localized: "The entry no longer exists."))
+            }
+            let saved: Bool
+            switch draft.kind {
+            case .local:
+                saved = true
+            case .remote:
+                saved = TreeDocument.setRemoteTarget(id, url: draft.url, domains: draft.domains, in: &list)
+                    && TreeDocument.setRefreshInterval(id, seconds: draft.refreshInterval, in: &list)
+            case .group:
+                saved = TreeDocument.setInclude(id, draft.include, in: &list)
+            case .folder:
+                saved = TreeDocument.setFolderMode(id, mode: draft.folderMode, in: &list)
+            }
+            guard saved else {
                 throw SwhError.command(String(localized: "The entry no longer exists."))
             }
             return id
@@ -328,16 +478,33 @@ final class HostsModel: ObservableObject {
     }
 
     /// Moves an entry to the trashcan. It stays restorable until the trashcan
-    /// entry is deleted.
+    /// entry is deleted. When `id` is one of several selected rows, all of them
+    /// move, as in 5.0.2.
     func moveToTrash(_ id: String) async {
-        guard let core else { return }
+        let ids = selectedIDs.contains(id) ? trashableSelection : [id]
+        await moveToTrash(ids: ids)
+    }
+
+    /// The selected rows that can go to the trashcan (not the system hosts row).
+    var trashableSelection: [String] {
+        let ids = selectedIDs.isEmpty ? Set(selection.map { [$0] } ?? []) : selectedIDs
+        return allNodes.map(\.id).filter { ids.contains($0) }
+    }
+
+    func moveToTrash(ids: [String]) async {
+        guard let core, !ids.isEmpty else { return }
         do {
-            try await core.send("move_to_trashcan", [id])
-            if selection == id {
+            if ids.count == 1 {
+                try await core.send("move_to_trashcan", [ids[0]])
+            } else {
+                try await core.send("move_many_to_trashcan", [ids])
+            }
+            if let current = selection, ids.contains(current) {
                 selection = nil
                 content = ""
                 savedContent = ""
             }
+            selectedIDs.subtract(ids)
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -523,39 +690,17 @@ final class HostsModel: ObservableObject {
     var selectedNode: HostsNode? { selection.flatMap { node(withID: $0) } }
     var isRemoteSelected: Bool { selectedNode?.isRemote == true }
 
-    /// Adds a remote entry and fetches its content straight away.
-    func addRemote(title: String, draft: RemoteDraft) async {
-        await editTree { list in
-            let id = UUID().uuidString
-            let parent = self.selectedFolderID(in: list)
-            guard TreeDocument.appendRemote(
-                id: id,
-                title: title,
-                url: draft.url,
-                domains: draft.domains,
-                refreshInterval: draft.refreshInterval,
-                parentID: parent,
-                to: &list
-            ) else {
-                throw SwhError.command(String(localized: "Select a folder to add into, or select nothing for the top level."))
-            }
-            return id
+    /// Every entry in the tree, depth first.
+    var allNodes: [HostsNode] {
+        func walk(_ nodes: [HostsNode]) -> [HostsNode] {
+            nodes.flatMap { [$0] + walk($0.children ?? []) }
         }
-        if let id = selection {
-            _ = await refreshRemote(id)
-        }
+        return walk(tree)
     }
 
-    /// Changes a remote entry's source and refresh interval. Its content is
-    /// fetched again on the next refresh.
-    func updateRemote(_ id: String, draft: RemoteDraft) async {
-        await editTree { list in
-            guard TreeDocument.setRemoteTarget(id, url: draft.url, domains: draft.domains, in: &list),
-                  TreeDocument.setRefreshInterval(id, seconds: draft.refreshInterval, in: &list) else {
-                throw SwhError.command(String(localized: "The remote entry no longer exists."))
-            }
-            return id
-        }
+    /// The entries a group lists that still exist, in the group's order.
+    func includedNodes(of group: HostsNode) -> [HostsNode] {
+        (group.include ?? []).compactMap { node(withID: $0) }
     }
 
     /// Fetches a remote entry's content through the core. Failures keep the
@@ -869,10 +1014,12 @@ final class HostsModel: ObservableObject {
             let touchedID = try edit(&list)
             try await core.send("set_list", [list, before])
             await reload()
-            if selectingEdited {
-                selection = touchedID
-            }
             errorMessage = nil
+            // Select through `select` so the editor shows the edited entry's
+            // own content, not the previous entry's.
+            if selectingEdited, selection != touchedID {
+                await select(touchedID)
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -905,15 +1052,25 @@ final class HostsModel: ObservableObject {
         }
     }
 
+    /// The content of a trashed entry, shown read-only. Folders and groups have none.
+    func trashContent(_ item: TrashItem) async -> String {
+        guard let core, item.data.isLocal || item.data.isRemote else { return "" }
+        return (try? await core.call(String.self, "get_hosts_content", [item.id])) ?? ""
+    }
+
     func restore(_ item: TrashItem) async {
         await trashAction("restore_item_from_trashcan", item.id)
     }
 
+    /// Deletes a trashed entry for good, after the same confirmation as 5.0.2.
     func deleteForever(_ item: TrashItem) async {
+        guard confirmDelete(String(localized: "Do you want to delete this item completely?")) else { return }
         await trashAction("delete_item_from_trashcan", item.id)
     }
 
+    /// Empties the trashcan, after the same confirmation as 5.0.2.
     func clearTrash() async {
+        guard confirmDelete(String(localized: "Are you sure you want to empty the trashcan?")) else { return }
         guard let core else { return }
         do {
             try await core.send("clear_trashcan")
@@ -923,6 +1080,16 @@ final class HostsModel: ObservableObject {
             errorMessage = error.localizedDescription
         }
         await reload()
+    }
+
+    /// Asks before a permanent delete. Returns false when the user cancels.
+    private func confirmDelete(_ message: String) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = message
+        alert.addButton(withTitle: String(localized: "Delete"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func trashAction(_ command: String, _ id: String) async {

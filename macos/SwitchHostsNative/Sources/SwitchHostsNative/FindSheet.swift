@@ -69,11 +69,26 @@ struct FindSheet: View {
             List(hits) { hit in
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(hit.item.itemTitle)
-                        Text("Line \(hit.position.line + 1): \(hit.position.match)")
+                        HStack(spacing: 6) {
+                            Text(hit.item.itemTitle)
+                            if hit.item.isReadOnly {
+                                Text("Read Only")
+                                    .font(.caption2)
+                                    .padding(.horizontal, 4)
+                                    .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        // The core counts lines from 1. The match is shown with the
+                        // text around it on its line, as 5.0.2's result rows do.
+                        (Text("Line \(hit.position.line): ")
+                            + Text(verbatim: hit.position.before)
+                            + Text(verbatim: hit.position.match).bold().foregroundColor(.accentColor)
+                            + Text(verbatim: hit.position.after))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                     Spacer()
                     Button("Show") {
@@ -87,7 +102,8 @@ struct FindSheet: View {
                             results = await model.findMatches(keyword: keyword, regexp: regexp, ignoreCase: ignoreCase)
                         }
                     }
-                    .disabled(keyword.isEmpty)
+                    // Remote and other non-local entries cannot be replaced in, as in 5.0.2.
+                    .disabled(keyword.isEmpty || hit.item.isReadOnly)
                 }
             }
             .frame(minHeight: 160)
@@ -107,7 +123,7 @@ struct FindSheet: View {
                 Button("Find", action: find)
                     .disabled(keyword.isEmpty)
                 Button("Replace All", action: replaceAll)
-                    .disabled(keyword.isEmpty || results.isEmpty)
+                    .disabled(keyword.isEmpty || !results.contains { !$0.isReadOnly })
                     .keyboardShortcut(.defaultAction)
             }
         }
