@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::storage::AppState;
@@ -60,7 +61,7 @@ enum MenuLocale {
 
 pub fn menu_labels<R: Runtime>(app: &AppHandle<R>) -> MenuLabels {
     let locale = app
-        .state::<AppState>()
+        .state::<Arc<AppState>>()
         .config
         .lock()
         .ok()
@@ -71,7 +72,7 @@ pub fn menu_labels<R: Runtime>(app: &AppHandle<R>) -> MenuLabels {
 
 pub fn find_window_title<R: Runtime>(app: &AppHandle<R>) -> &'static str {
     let locale = app
-        .state::<AppState>()
+        .state::<Arc<AppState>>()
         .config
         .lock()
         .ok()
