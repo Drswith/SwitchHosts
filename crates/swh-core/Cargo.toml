@@ -1,0 +1,50 @@
+[package]
+name = "swh-core"
+version = "5.0.3-beta.3"
+description = "Tauri-free SwitchHosts core: storage, hosts apply, remote fetch, import/export, migration"
+authors = ["oldj"]
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+[lib]
+name = "swh_core"
+path = "src/lib.rs"
+
+[features]
+# Exposes test fixtures to dependent crates' test suites.
+test-support = []
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+dirs = "7.0.0"
+thiserror = "2.0.21"
+log = "0.4.34"
+regex = "1.13.1"
+# Same feature set as the Tauri app so SOCKS proxies work for both.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "gzip", "brotli", "socks"] }
+rustls = { version = "0.23.45", default-features = false, features = ["std"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+tokio = { version = "1.53.2", features = ["process", "time", "rt", "rt-multi-thread", "macros", "net", "sync"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "query", "json"] }
+
+[build-dependencies]
+serde_json = "1.0.151"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.190"
+objc2 = "0.6.4"
+block2 = "0.6.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_System_Threading",
+    "Win32_System_Registry",
+    "Win32_System_Com",
+    "Win32_System_SystemInformation",
+] }

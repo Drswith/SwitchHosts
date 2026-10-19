@@ -1,0 +1,26 @@
+[package]
+name = "swh-ffi"
+version = "5.0.3-beta.3"
+description = "C ABI over swh-core for the native macOS app"
+authors = ["oldj"]
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+[lib]
+name = "swh_ffi"
+# staticlib: linked into the Swift app. rlib: lets the Rust tests drive the C API.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+swh-core = { path = "../swh-core" }
+serde_json = "1.0.151"
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "rt", "macros"] }
+log = "0.4.34"
+
+[profile.release]
+# Keep unwinding so `catch_unwind` at the C boundary can contain panics.
+panic = "unwind"
+opt-level = "s"
+lto = true
+codegen-units = 1

@@ -165,12 +165,12 @@ pub fn install_main_window_handlers<R: Runtime>(window: &WebviewWindow<R>) {
     window.on_window_event(move |event| match event {
         WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
             let app = window_clone.app_handle().clone();
-            let app_state = app.state::<AppState>();
+            let app_state = app.state::<Arc<AppState>>();
             maybe_persist_window_geometry(&window_clone, app_state.inner());
         }
         WindowEvent::CloseRequested { api, .. } => {
             let app = window_clone.app_handle().clone();
-            let app_state = app.state::<AppState>();
+            let app_state = app.state::<Arc<AppState>>();
 
             // Unthrottled persist so the final position lands even
             // if the last drag event was within the throttle window.
@@ -306,7 +306,7 @@ pub fn show_main_window<R: Runtime + 'static>(app: &AppHandle<R>) {
         }
     }
 
-    let app_state = app.state::<AppState>();
+    let app_state = app.state::<Arc<AppState>>();
     let window = match create_main_window(app, app_state.inner()) {
         Ok(w) => w,
         Err(e) => {
@@ -1185,7 +1185,7 @@ fn set_relaunch_on_login_disabled_on_main_thread(disabled: bool) {
 /// every exit-request path, even the ones that bypass our explicit
 /// quit_app command (Cmd+Q on macOS, log-off / shutdown sequences).
 pub fn persist_on_exit_requested<R: Runtime>(app: &AppHandle<R>) {
-    let app_state = app.state::<AppState>();
+    let app_state = app.state::<Arc<AppState>>();
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         persist_window_geometry(&window, app_state.inner());
     }
@@ -1197,7 +1197,7 @@ pub fn persist_on_exit_requested<R: Runtime>(app: &AppHandle<R>) {
 /// intercepting closes as "hide" and the `ExitRequested` hook stops
 /// preventing the exit, then asks Tauri to terminate.
 pub fn quit_app<R: Runtime>(app: &AppHandle<R>) {
-    let state = app.state::<AppState>();
+    let state = app.state::<Arc<AppState>>();
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         persist_window_geometry(&window, state.inner());
     }
