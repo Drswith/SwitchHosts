@@ -104,10 +104,10 @@
 - [x] 手工验收清单：`docs/native-acceptance.md`，按 9 个 spec 列出步骤和期望结果，并说明隔离环境的准备。
 - [x] 自动化：`macos/scripts/run-tests.sh` 运行全部 Rust 与 Swift 测试，并检查 `/etc/hosts` 的托管标记在测试前后没有变化。
 - [x] XCUITest 工程：`macos/UITests/SwitchHostsUITests.xcodeproj`，目标 `SwitchHostsUITests`，共享 scheme 已建。测试用隔离的临时 HOME 启动 `macos/build/SwitchHosts.app`，只做读取与选择（列表、选择文件夹、⌘, 打开设置）。
-- [ ] 尚未运行成功：本机的 Automation Mode 处于关闭状态。启用它是系统安全设置，需要管理员认证，我不会改。另外 UI 测试 runner 是临时签名的，Gatekeeper 把它判为已损坏（`SwitchHostsUITests-Runner.app` 已损坏）。这两件事都需要在本机由你处理后再运行测试。
+- [ ] 暂不运行（你决定暂不开启）：本机的 Automation Mode 处于关闭状态，开启它是系统安全设置，需要管理员认证。另外 UI 测试 runner 目前是临时签名的，Gatekeeper 会报「已损坏」，这一项尚未处理。日后要运行时，两件事都需要处理。
 - [x] 界面确认（授权后，真实窗口）：拖拽、行号栏、数据目录的更改与重置（经由 NSOpenPanel 与 NSAlert，在隔离的 HOME 中完成，指针文件与复制后的数据均已核对，真实数据未改动）。
 - [x] 真实窗口中已确认：「信息」面板（修复了英文状态与类型的本地化）、语言切换（跟随系统 / English，经重新启动后整个界面变为英文）。
-- [ ] 未在真实窗口中确认：托盘快捷小窗关闭时的紧凑列表。原因：菜单栏状态项在本机被挤到溢出区，无法点击；离屏渲染中紧凑列表的文字不显示，只能看到开关的结构。
+- [x] 托盘快捷小窗关闭时的紧凑列表已在真实窗口中确认（你手动打开并截图两次）：列出条目与开关，底部有「Open SwitchHosts」「Quit SwitchHosts」，文字正常显示。
 
 ## 最新验证
 

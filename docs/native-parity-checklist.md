@@ -37,10 +37,9 @@
 
 ## 未覆盖（需要真实环境或权限）
 
-- XCUITest 工程已建立（`macos/UITests`），但运行需要你开启 Automation Mode（系统安全设置）。
+- XCUITest 工程已建立（`macos/UITests`），运行需要开启 Automation Mode（系统安全设置）。你决定暂不开启。
 
 - 应用到系统 hosts 的完整路径（需要管理员授权，测试中刻意未执行）。
 - 数据目录的「更改」与「重置」会重新启动应用，只做了内核层的校验测试，没有在本机实际切换过。
 - 签名、公证、Sparkle 或其它自动更新（需要 Developer ID 证书与更新源）。
-- 托盘快捷小窗关闭时的紧凑列表：代码已编译，离屏渲染中可见结构但文字不显示，菜单栏状态项在本机被挤到溢出区，无法在真实窗口中核对。
-- XCUITest：未运行（Automation Mode 关闭，需要本机管理员认证）。
+- XCUITest：未运行。你决定暂不开启 Automation Mode（系统安全设置，需要管理员认证）；UI 测试 runner 的临时签名问题也尚未处理。
