@@ -7,6 +7,8 @@ public struct DataDirStatus: Decodable, Equatable, Sendable {
     public let canReset: Bool
     /// Set when the recorded folder was unusable at launch: "missing" or "invalid".
     public let recoveryKind: String?
+    /// The folder that went missing. Nil for an unreadable pointer.
+    public let recoveryPath: String?
 
     enum CodingKeys: String, CodingKey {
         case activeDir = "active_dir"
@@ -20,7 +22,9 @@ public struct DataDirStatus: Decodable, Equatable, Sendable {
         activeDir = try container.decode(String.self, forKey: .activeDir)
         defaultDir = try container.decode(String.self, forKey: .defaultDir)
         canReset = try container.decode(Bool.self, forKey: .canReset)
-        recoveryKind = try container.decodeIfPresent(Recovery.self, forKey: .recovery)?.kind
+        let recovery = try container.decodeIfPresent(Recovery.self, forKey: .recovery)
+        recoveryKind = recovery?.kind
+        recoveryPath = recovery?.path
     }
 
     /// `path` is null for an unreadable pointer, so it is optional here.

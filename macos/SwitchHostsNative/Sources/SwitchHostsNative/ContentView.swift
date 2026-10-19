@@ -6,42 +6,35 @@ import UniformTypeIdentifiers
 /// the right. Tree edits and the trashcan go through the Rust core.
 struct ContentView: View {
     @ObservedObject var model: HostsModel
-    @State private var namePrompt: NamePrompt?
-    @State private var remotePrompt: RemotePrompt?
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             List(selection: Binding(
-                get: { model.selection },
-                set: { id in Task { await model.select(id) } }
+                get: { model.selectedIDs },
+                set: { ids in Task { await model.changeSelection(to: ids) } }
             )) {
                 Label("System Hosts", systemImage: "desktopcomputer")
                     .tag(HostsModel.systemHostsID)
-                TreeRows(
-                    nodes: model.tree,
-                    model: model,
-                    onRename: { namePrompt = .rename($0) },
-                    onEditRemote: { remotePrompt = .edit($0) }
-                )
+                TreeRows(nodes: model.tree, model: model)
             }
             .navigationSplitViewColumnWidth(min: 220, ideal: CGFloat(model.leftPanelWidth))
             .toolbar {
                 ToolbarItemGroup {
                     Menu {
-                        Button("New Local Entry") { namePrompt = .newEntry }
-                        Button("New Remote Entry") { remotePrompt = .new }
+                        Button("New Local Entry") { model.entryPrompt = .new(.local) }
+                        Button("New Remote Entry") { model.entryPrompt = .new(.remote) }
+                        Button("New Group") { model.entryPrompt = .new(.group) }
+                        Button("New Folder") { model.entryPrompt = .new(.folder) }
                     } label: {
                         Label("New", systemImage: "plus")
                     }
                     Button {
-                        if let id = model.selection {
-                            Task { await model.moveToTrash(id) }
-                        }
+                        Task { await model.moveToTrash(ids: model.trashableSelection) }
                     } label: {
                         Label("Move to Trash", systemImage: "trash")
                     }
-                    .disabled(model.selection == nil)
+                    .disabled(model.trashableSelection.isEmpty)
                     Button {
                         Task {
                             await model.loadTrash()
@@ -148,37 +141,8 @@ struct ContentView: View {
                 }
             }
         }
-        .onChange(of: model.newEntryRequest) { request in
-            guard let request else { return }
-            model.newEntryRequest = nil
-            switch request {
-            case .local: namePrompt = .newEntry
-            case .remote: remotePrompt = .new
-            }
-        }
-        .sheet(item: $remotePrompt) { prompt in
-            RemoteSheet(prompt: prompt) { draft in
-                Task {
-                    switch prompt {
-                    case .new:
-                        await model.addRemote(title: draft.title, draft: draft)
-                    case .edit(let node):
-                        await model.updateRemote(node.id, draft: draft)
-                    }
-                }
-            }
-        }
-        .sheet(item: $namePrompt) { prompt in
-            NameSheet(prompt: prompt) { name in
-                Task {
-                    switch prompt {
-                    case .newEntry:
-                        await model.addLocal(title: name)
-                    case .rename(let node):
-                        await model.rename(node.id, to: name)
-                    }
-                }
-            }
+        .sheet(item: $model.entryPrompt) { prompt in
+            EntrySheet(prompt: prompt, model: model)
         }
         .sheet(isPresented: $model.showFind) {
             FindSheet(model: model)
@@ -208,19 +172,12 @@ struct ContentView: View {
 private struct TreeRows: View {
     let nodes: [HostsNode]
     @ObservedObject var model: HostsModel
-    let onRename: (HostsNode) -> Void
-    let onEditRemote: (HostsNode) -> Void
 
     var body: some View {
         ForEach(nodes) { node in
             if node.isFolder {
                 DisclosureGroup(isExpanded: expanded(node)) {
-                    TreeRows(
-                        nodes: node.children ?? [],
-                        model: model,
-                        onRename: onRename,
-                        onEditRemote: onEditRemote
-                    )
+                    TreeRows(nodes: node.children ?? [], model: model)
                 } label: {
                     DraggableRow(node: node, model: model) { row(node) }
                 }
@@ -233,12 +190,7 @@ private struct TreeRows: View {
     }
 
     private func row(_ node: HostsNode) -> EntryRow {
-        EntryRow(
-            node: node,
-            model: model,
-            onRename: { onRename(node) },
-            onEditRemote: { onEditRemote(node) }
-        )
+        EntryRow(node: node, model: model)
     }
 
     private func expanded(_ node: HostsNode) -> Binding<Bool> {
@@ -319,33 +271,32 @@ private struct TreeDropDelegate: DropDelegate {
 private struct EntryRow: View {
     let node: HostsNode
     @ObservedObject var model: HostsModel
-    let onRename: () -> Void
-    let onEditRemote: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: node.isFolder ? "folder" : (node.isRemote ? "globe" : "doc.text"))
+            Image(systemName: node.symbolName)
                 .foregroundStyle(.secondary)
             Text(node.title ?? node.id)
                 .fontWeight(node.isFolder ? .semibold : .regular)
             Spacer()
-            if !node.isFolder {
-                Toggle(
-                    node.title ?? node.id,
-                    isOn: Binding(
-                        get: { node.isOn },
-                        set: { _ in Task { await model.toggle(node) } }
-                    )
+            // Every entry has a switch, folders included: switching a folder
+            // switches its children by the folder's choice mode (the core's rule).
+            Toggle(
+                node.title ?? node.id,
+                isOn: Binding(
+                    get: { node.isOn },
+                    set: { _ in Task { await model.toggle(node) } }
                 )
-                .labelsHidden()
-                .toggleStyle(.switch)
-            }
+            )
+            .labelsHidden()
+            .toggleStyle(.switch)
         }
         .contextMenu {
+            Button("Edit…") { model.entryPrompt = .edit(node) }
             if node.isRemote {
                 Button("Refresh") { Task { await model.refreshRemote(node.id) } }
-                Button("Edit Remote Entry…", action: onEditRemote)
             }
+            Divider()
             Button("Move Up") { Task { await model.move(node.id, by: -1) } }
             Button("Move Down") { Task { await model.move(node.id, by: 1) } }
             Menu("Move to Folder") {
@@ -357,7 +308,7 @@ private struct EntryRow: View {
                     }
                 }
             }
-            Button("Rename…", action: onRename)
+            Divider()
             Button("Move to Trash") {
                 Task { await model.moveToTrash(node.id) }
             }
@@ -389,6 +340,9 @@ private struct EditorPane: View {
                     }
             } else if let node = model.selectedNode, node.isFolder {
                 FolderPane(model: model, node: node)
+            } else if let node = model.selectedNode, node.isGroup {
+                // Read-only, as in 5.0.2: a group only lists other entries.
+                GroupPane(model: model, node: node)
             } else if let node = model.selectedNode, node.isRemote {
                 // Read-only: the content is whatever the last refresh fetched.
                 VStack(alignment: .leading, spacing: 8) {
@@ -438,65 +392,6 @@ private struct EditorPane: View {
     }
 }
 
-/// Which name the sheet is asking for.
-enum NamePrompt: Identifiable {
-    case newEntry
-    case rename(HostsNode)
-
-    var id: String {
-        switch self {
-        case .newEntry: return "new"
-        case .rename(let node): return "rename-\(node.id)"
-        }
-    }
-
-    var initialName: String {
-        switch self {
-        case .newEntry: return ""
-        case .rename(let node): return node.title ?? node.id
-        }
-    }
-}
-
-private struct NameSheet: View {
-    let prompt: NamePrompt
-    let onSubmit: (String) -> Void
-    @State private var name: String
-    @Environment(\.dismiss) private var dismiss
-
-    init(prompt: NamePrompt, onSubmit: @escaping (String) -> Void) {
-        self.prompt = prompt
-        self.onSubmit = onSubmit
-        _name = State(initialValue: prompt.initialName)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(prompt.initialName.isEmpty ? LocalizedStringKey("New Entry") : LocalizedStringKey("Rename Entry"))
-                .font(.headline)
-            TextField("Name", text: $name)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(submit)
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Save", action: submit)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 320)
-    }
-
-    private func submit() {
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        onSubmit(trimmed)
-        dismiss()
-    }
-}
-
 /// Asks how to apply a staged backup: append it, replace the tree, or cancel.
 private struct ImportSheet: View {
     let pending: HostsModel.PendingImport
@@ -532,10 +427,13 @@ private struct ImportSheet: View {
     }
 }
 
-/// Lists trashed entries with restore and delete actions.
+/// Lists trashed entries with restore and delete actions. Selecting one shows
+/// its content read-only, as 5.0.2 does for a trashcan item.
 private struct TrashSheet: View {
     @ObservedObject var model: HostsModel
     @Environment(\.dismiss) private var dismiss
+    @State private var selectedID: String?
+    @State private var preview = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -543,19 +441,33 @@ private struct TrashSheet: View {
             if model.trashItems.isEmpty {
                 Text("The trash is empty.").foregroundStyle(.secondary)
             } else {
-                List(model.trashItems) { item in
-                    HStack {
-                        Text(item.data.title ?? item.data.id)
-                        Spacer()
-                        Button("Restore") {
-                            Task { await model.restore(item) }
+                HStack(alignment: .top, spacing: 12) {
+                    List(model.trashItems, selection: $selectedID) { item in
+                        HStack {
+                            Label(item.data.title ?? item.data.id, systemImage: item.data.symbolName)
+                            Spacer()
+                            Button("Restore") {
+                                Task { await model.restore(item) }
+                            }
+                            Button("Delete") {
+                                Task { await model.deleteForever(item) }
+                            }
                         }
-                        Button("Delete") {
-                            Task { await model.deleteForever(item) }
+                        .tag(item.id)
+                    }
+                    .frame(width: 330, height: 260)
+                    Group {
+                        if selectedItem == nil {
+                            Text("Select an item to see its content.")
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            HighlightingEditor(text: .constant(preview), readOnly: true, reveal: nil)
                         }
                     }
+                    .frame(width: 330, height: 260)
+                    .border(Color.secondary.opacity(0.3))
                 }
-                .frame(minHeight: 200)
             }
             HStack {
                 Button("Empty Trash") {
@@ -568,8 +480,26 @@ private struct TrashSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 460)
+        .frame(width: 712)
         .task { await model.loadTrash() }
+        .onChange(of: selectedID) { _ in
+            Task { await loadPreview() }
+        }
+        .onChange(of: model.trashItems) { _ in
+            if selectedItem == nil { selectedID = nil }
+        }
+    }
+
+    private var selectedItem: TrashItem? {
+        model.trashItems.first { $0.id == selectedID }
+    }
+
+    private func loadPreview() async {
+        guard let item = selectedItem else {
+            preview = ""
+            return
+        }
+        preview = await model.trashContent(item)
     }
 }
 
@@ -619,20 +549,22 @@ struct EntryInfoPanel: View {
             } else if let node = model.selectedNode {
                 row("Name", node.title ?? node.id)
                 row("Type", kindLabel(node))
-                if !node.isFolder {
-                    row("Status", LocalizedStringKey(node.isOn ? "Enabled" : "Disabled"))
-                }
+                row("Status", LocalizedStringKey(node.isOn ? "Enabled" : "Disabled"))
                 if node.isFolder {
                     row("Choice Mode", choiceLabel(node.folderMode ?? 0))
                     row("Entries", "\((node.children ?? []).count)")
                 }
+                if node.isGroup {
+                    let titles = model.includedNodes(of: node).map { $0.title ?? $0.id }
+                    row("Content", titles.isEmpty ? "—" : titles.joined(separator: "\n"))
+                }
                 if node.isRemote {
                     row("Source", LocalizedStringKey(node.source == "domain" ? "Domains" : "URL"))
                     row("Address", node.source == "domain" ? (node.domains ?? []).joined(separator: ", ") : (node.url ?? ""))
-                    row("Refresh interval", intervalLabel(node.refreshInterval ?? 0))
+                    row("Refresh interval", RefreshInterval.label(node.refreshInterval ?? 0))
                     row("Last refresh", node.lastRefresh ?? "—")
                 }
-                if !node.isFolder {
+                if node.isLocal || node.isRemote {
                     let text = model.content
                     row("Size", ByteCountFormatter.string(fromByteCount: Int64(text.utf8.count), countStyle: .file))
                     row("Lines", "\(text.split(separator: "\n", omittingEmptySubsequences: false).count)")
@@ -664,6 +596,7 @@ struct EntryInfoPanel: View {
     private func kindLabel(_ node: HostsNode) -> LocalizedStringKey {
         if node.isFolder { return "Folder" }
         if node.isRemote { return "Remote Entry" }
+        if node.isGroup { return "Group" }
         return "Local"
     }
 
@@ -674,13 +607,15 @@ struct EntryInfoPanel: View {
         default: return "Default"
         }
     }
+}
 
-    private func intervalLabel(_ seconds: Int) -> LocalizedStringKey {
-        switch seconds {
-        case 3600: return "Every hour"
-        case 86400: return "Every day"
-        default: return "Manual"
-        }
+extension HostsNode {
+    /// The SF Symbol for this kind of entry, after 5.0.2's item icons.
+    var symbolName: String {
+        if isFolder { return "folder" }
+        if isRemote { return "globe" }
+        if isGroup { return "square.stack" }
+        return "doc.text"
     }
 }
 

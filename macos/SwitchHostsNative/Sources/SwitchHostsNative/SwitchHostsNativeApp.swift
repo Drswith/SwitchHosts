@@ -32,9 +32,11 @@ struct SwitchHostsNativeApp: App {
                 }
             }
             CommandGroup(replacing: .newItem) {
-                Button("New Local Entry") { model.newEntryRequest = .local }
+                Button("New Local Entry") { model.entryPrompt = .new(.local) }
                     .keyboardShortcut("n", modifiers: .command)
-                Button("New Remote Entry") { model.newEntryRequest = .remote }
+                Button("New Remote Entry") { model.entryPrompt = .new(.remote) }
+                Button("New Group") { model.entryPrompt = .new(.group) }
+                Button("New Folder") { model.entryPrompt = .new(.folder) }
                 Divider()
                 Button("Import Backup…") { model.importBackupWithPanel() }
                 Button("Import from URL…") { model.showImportURL = true }
