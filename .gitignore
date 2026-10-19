@@ -38,3 +38,7 @@ plan.md
 # Tauri
 src-tauri/target
 src-tauri/gen/schemas
+
+# Native rewrite build outputs
+crates/*/target
+macos/SwitchHostsNative/.build
