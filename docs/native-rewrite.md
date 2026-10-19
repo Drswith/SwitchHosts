@@ -87,7 +87,8 @@
 - [x] 应用菜单：应用（关于）、文件（新建本地 / 远程条目、导入备份、从 URL 导入、导出备份）、编辑（查找与替换、注释 / 取消注释）、帮助（反馈、主页）。
 - [x] 语言只保留中文与英文（决定）。中文译文由 `macos/scripts/sync-localizations.py` 生成：来自 5.0.2 字典的 `KEYS` 映射加上 `OVERRIDES`。界面里的 Swift 字符串已逐条核对（有脚本检查未覆盖的字符串）。英文即代码中的文本。
 - [x] 核心返回的用户可见错误（写入、导入、HTTP、TLS、DNS、刷新、存储）按英文原文作为键翻译（`CoreText.swift`；测试检查每个模板的占位符数量与中文译文一致）。
-- [ ] 仍是英文：开发者用的诊断信息，例如参数类型错误、系统命令的原始输出、helper 的 payload 检查。它们不出现在正常操作的界面中。
+- [x] 开发者诊断信息已翻译：参数错误（`args[N] must be …`、`expected …`）、helper 的 payload 检查、桥接的兜底文本（`CoreText.swift` 与 `sync-localizations.py` 的 `OVERRIDES`；测试检查中文条目存在）。它们不出现在正常操作的界面中。
+  - 仍保持原文，不计入此项：系统命令的原始输出（例如命令运行历史里的 stdout / stderr，是用户命令的输出，不是诊断信息），以及 serde 解析器给出的细节（`find_replace_one: invalid request:` 之后的部分）。
 - [x] 行号栏已在真实窗口中验证：第一行显示 1，与文本行对齐。之前栏内没有数字，原因是文本被替换时没有触发重绘，现已修复。
 
 ### H6 特权 helper、更新、打包
@@ -95,8 +96,8 @@
 - [x] helper 的状态与安装/修复/卸载命令迁入内核 `api`；Tauri 版的同名命令委托内核。
 - [x] 只读的更新检查：查询 GitHub 最新发布，有新版本时由用户点击打开发布页，不自动下载或安装。
 - [x] `macos/scripts/make-app.sh` 生成 `SwitchHosts.app`（bundle id `net.oldj.switchhosts.native`，与 Tauri 版可并存）。自动使用本机的 Apple Development 证书签名（`SIGN_IDENTITY` 可覆盖），`codesign --verify --deep --strict` 通过。只复制 `Resources` 中当前语言的 `.lproj`。
-- [ ] 阻塞：Developer ID 签名与公证需要证书，当前环境没有。Apple Development 证书只能在本机运行。SMAppService 的 helper 绑定了团队 J5J6USUX2F，用本机证书无法安装 helper，偏好里的 helper 安装会失败。
-- [ ] 决定：不做自动安装更新（Sparkle 等需要签名更新源），仅保留手动检查。
+- 已知限制（你决定暂缓公证）：Developer ID 签名与公证需要证书，当前环境没有。Apple Development 证书只能在本机运行。SMAppService 的 helper 绑定了团队 J5J6USUX2F，用本机证书无法安装 helper，偏好里的 helper 安装会失败。
+- 已知限制（按你的选择记录）：不做自动安装更新（Sparkle 等需要签名更新源），仅保留手动检查。
 
 ### H7 行为验收
 
@@ -104,7 +105,7 @@
 - [x] 手工验收清单：`docs/native-acceptance.md`，按 9 个 spec 列出步骤和期望结果，并说明隔离环境的准备。
 - [x] 自动化：`macos/scripts/run-tests.sh` 运行全部 Rust 与 Swift 测试，并检查 `/etc/hosts` 的托管标记在测试前后没有变化。
 - [x] XCUITest 工程：`macos/UITests/SwitchHostsUITests.xcodeproj`，目标 `SwitchHostsUITests`，共享 scheme 已建。测试用隔离的临时 HOME 启动 `macos/build/SwitchHosts.app`，只做读取与选择（列表、选择文件夹、⌘, 打开设置）。
-- [ ] 暂不运行（你决定暂不开启）：本机的 Automation Mode 处于关闭状态，开启它是系统安全设置，需要管理员认证。另外 UI 测试 runner 目前是临时签名的，Gatekeeper 会报「已损坏」，这一项尚未处理。日后要运行时，两件事都需要处理。
+- 已知限制（你决定暂不开启）：XCUITest 未运行。本机的 Automation Mode 处于关闭状态，开启它是系统安全设置，需要管理员认证。UI 测试 runner 目前是临时签名的，Gatekeeper 会报「已损坏」。日后要运行时，两件事都需要处理。
 - [x] 界面确认（授权后，真实窗口）：拖拽、行号栏、数据目录的更改与重置（经由 NSOpenPanel 与 NSAlert，在隔离的 HOME 中完成，指针文件与复制后的数据均已核对，真实数据未改动）。
 - [x] 真实窗口中已确认：「信息」面板（修复了英文状态与类型的本地化）、语言切换（跟随系统 / English，经重新启动后整个界面变为英文）。
 - [x] 托盘快捷小窗关闭时的紧凑列表已在真实窗口中确认（你手动打开并截图两次）：列出条目与开关，底部有「Open SwitchHosts」「Quit SwitchHosts」，文字正常显示。
@@ -116,7 +117,7 @@
 - `crates/swh-core`：278 个用例，包括代理路由（HTTP 与 SOCKS5）、命令历史、数据目录的校验路径，以及 `tests/data_dir_roundtrip.rs`（在隔离的 HOME 中完成复制、重启、重置的完整流程）。
 - `crates/swh-ffi`：5 个用例。
 - `src-tauri --lib`：54 个用例。
-- `swift test`（`macos/SwitchHostsNative`）：55 个用例通过。离屏渲染用例（5 个）在未设置 `SWH_SHOTS_DIR` 时跳过；设置后全部通过，并生成截图。覆盖拖放、折叠、文件夹模式、远程刷新、历史与命令历史的桥接、核心消息的本地化、解码、拖放的 payload 往返。
+- `swift test`（`macos/SwitchHostsNative`）：56 个用例通过。离屏渲染用例（5 个）在未设置 `SWH_SHOTS_DIR` 时跳过；设置后全部通过，并生成截图。覆盖拖放、折叠、文件夹模式、远程刷新、历史与命令历史的桥接、核心消息的本地化（含开发者诊断信息的中文条目）、解码、拖放的 payload 往返。
 
 真实窗口中的检查（授权后，用真实输入，隔离的 HOME，真实数据未改动）：
 

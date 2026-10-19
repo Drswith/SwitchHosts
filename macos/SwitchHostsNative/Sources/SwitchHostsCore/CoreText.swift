@@ -31,19 +31,25 @@ public enum CoreText {
         ("^invalid pattern: (.+)$", "invalid pattern: %@"),
         ("^command timed out after (.+)s$", "command timed out after %@s"),
         ("^error_([0-9]+)$", "Server returned HTTP %@."),
+        ("^expected a string at args\\[([0-9]+)\\]$", "expected a string at args[%@]"),
+        ("^find_replace_one: invalid request: (.+)$", "find_replace_one: invalid request: %@"),
+        ("^payload too large: ([0-9]+) bytes$", "payload too large: %@ bytes"),
         ("^DNS server returned status (.+)\\. The DNS service can be changed in Preferences\\.$",
          "DNS server returned status %@. The DNS service can be changed in Preferences."),
     ]
 
     /// The localized text for a core message. Messages without a translation are
-    /// returned unchanged.
+    /// returned unchanged. Captured values are localized too, so a message such as
+    /// "config value for X failed validation: expected ..." translates its reason.
     public static func localized(_ message: String) -> String {
         let text = message as NSString
         let whole = NSRange(location: 0, length: text.length)
         for template in templates {
             guard let regex = try? NSRegularExpression(pattern: template.pattern),
                   let match = regex.firstMatch(in: message, range: whole) else { continue }
-            let values: [CVarArg] = (1..<match.numberOfRanges).map { text.substring(with: match.range(at: $0)) as NSString }
+            let values: [CVarArg] = (1..<match.numberOfRanges).map {
+                localized(text.substring(with: match.range(at: $0))) as NSString
+            }
             return String(format: NSLocalizedString(template.key, comment: ""), arguments: values)
         }
         return NSLocalizedString(message, comment: "")

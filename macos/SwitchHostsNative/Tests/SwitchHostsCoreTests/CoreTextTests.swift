@@ -70,4 +70,34 @@ final class CoreTextTests: XCTestCase {
             XCTAssertNotNil(strings[message], "missing translation for \(message)")
         }
     }
+
+    /// Developer-facing diagnostics: argument and payload errors, and the bridge's
+    /// own fallbacks. Each one has a Chinese entry so none stays English.
+    func testDeveloperDiagnosticsHaveChineseText() throws {
+        let strings = try chineseStrings()
+        let diagnostics = [
+            "expected an array of host nodes",
+            "expected the previously read array of host nodes",
+            "expected an array of ids",
+            "expected a string content at args[1]",
+            "config_get requires a string key as the first argument",
+            "expected a FindHistoryEntry object",
+            "refresh_remote_hosts: args[0] must be a string",
+            "find_by: args[0] must be a string keyword",
+            "find_replace_one: args[0] must be a request object",
+            "find_replace_all: args[0] must be a string keyword",
+            "find_replace_all: args[2] must be a string replacement",
+            "http_api_configure: args[0] must be a boolean",
+            "http_api_configure: args[1] must be a port number",
+            "arguments must be a JSON array",
+            "payload contains a NUL byte",
+            "payload is not valid UTF-8",
+            "The hosts core is closed.",
+            "Unknown error",
+            "The core returned an unexpected response.",
+        ]
+        for message in diagnostics {
+            XCTAssertNotNil(strings[message], "missing translation for \(message)")
+        }
+    }
 }
