@@ -25,6 +25,40 @@ public enum TreeDocument {
     @discardableResult
     public static func appendLocal(id: String, title: String, parentID: String?, to nodes: inout [Node]) -> Bool {
         let entry: Node = ["id": id, "type": "local", "title": title, "on": false]
+        return append(entry, parentID: parentID, to: &nodes)
+    }
+
+    /// Appends an empty folder. `folderMode` 0 inherits the global choice mode,
+    /// 1 allows one enabled child, 2 allows several.
+    @discardableResult
+    public static func appendFolder(id: String, title: String, folderMode: Int, parentID: String?, to nodes: inout [Node]) -> Bool {
+        let entry: Node = [
+            "id": id, "type": "folder", "title": title, "on": false,
+            "folder_mode": folderMode, "children": [Node](),
+        ]
+        return append(entry, parentID: parentID, to: &nodes)
+    }
+
+    /// Appends a group that lists the entries in `include` (local and remote ids).
+    @discardableResult
+    public static func appendGroup(id: String, title: String, include: [String], parentID: String?, to nodes: inout [Node]) -> Bool {
+        let entry: Node = ["id": id, "type": "group", "title": title, "on": false, "include": include]
+        return append(entry, parentID: parentID, to: &nodes)
+    }
+
+    /// Sets which entries a group lists. Returns false if `id` is missing or is
+    /// not a group.
+    @discardableResult
+    public static func setInclude(_ id: String, _ include: [String], in nodes: inout [Node]) -> Bool {
+        mutate(id, in: &nodes) { node in
+            guard node["type"] as? String == "group" else { return false }
+            node["include"] = include
+            return true
+        }
+    }
+
+    /// Adds `entry` at the end of folder `parentID`, or of the top level when nil.
+    private static func append(_ entry: Node, parentID: String?, to nodes: inout [Node]) -> Bool {
         guard let parentID else {
             nodes.append(entry)
             return true
@@ -46,11 +80,7 @@ public enum TreeDocument {
     ) -> Bool {
         var entry: Node = ["id": id, "type": "remote", "title": title, "on": false, "refresh_interval": refreshInterval]
         applyTarget(url: url, domains: domains, to: &entry)
-        guard let parentID else {
-            nodes.append(entry)
-            return true
-        }
-        return insert(entry, under: parentID, in: &nodes)
+        return append(entry, parentID: parentID, to: &nodes)
     }
 
     /// Changes where a remote entry gets its content from. Returns false if

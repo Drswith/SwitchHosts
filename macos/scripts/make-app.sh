@@ -17,6 +17,10 @@ rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin_dir/SwitchHostsNative" "$app/Contents/MacOS/SwitchHosts"
 
+# 5.0.2's app icon and its template tray icon.
+cp "$repo_root/src-tauri/icons/icon.icns" "$app/Contents/Resources/AppIcon.icns"
+cp "$repo_root/src-tauri/icons/tray-mac.png" "$app/Contents/Resources/tray-mac.png"
+
 # Text() looks strings up in the main bundle, so copy the .lproj folders there.
 # Copy from the package sources: the SwiftPM bundle can keep folders from older builds.
 for lproj in "$pkg"/Sources/SwitchHostsNative/Resources/*.lproj; do
@@ -32,6 +36,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>SwitchHosts</string>
   <key>CFBundleIdentifier</key><string>net.oldj.switchhosts.native</string>
   <key>CFBundleExecutable</key><string>SwitchHosts</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>
   <key>CFBundleVersion</key><string>${version}</string>

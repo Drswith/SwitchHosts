@@ -8,25 +8,23 @@ struct ImportURLSheet: View {
     @State private var address = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Import from URL")
-                .font(.headline)
-            TextField("https://example.com/backup.json", text: $address)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(submit)
-            Text("The address must return a SwitchHosts backup file (JSON).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Import", action: submit)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!isValid)
+        SheetLayout(symbol: "link", title: Text("Import from URL"), width: 460) {
+            Card {
+                TextField("https://example.com/backup.json", text: $address)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(submit)
+                Text("The address must return a SwitchHosts backup file (JSON).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
+        } footer: {
+            Spacer()
+            Button("Cancel") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+            Button("Import", action: submit)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!isValid)
         }
-        .padding(20)
-        .frame(width: 440)
     }
 
     private var isValid: Bool {

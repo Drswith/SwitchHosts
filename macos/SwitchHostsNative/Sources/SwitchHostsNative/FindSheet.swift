@@ -23,9 +23,8 @@ struct FindSheet: View {
     @State private var searched = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Find and Replace").font(.headline)
-
+        SheetLayout(symbol: "magnifyingglass", title: Text("Find and Replace"), width: 620) {
+          Card {
             HStack(spacing: 4) {
                 TextField("Find", text: $keyword)
                     .textFieldStyle(.roundedBorder)
@@ -60,25 +59,38 @@ struct FindSheet: View {
                 .disabled(replaceHistory.isEmpty)
             }
 
-            HStack {
+            HStack(spacing: 16) {
                 Toggle("Regular expression", isOn: $regexp)
                 Toggle("Ignore case", isOn: $ignoreCase)
                 Spacer()
             }
+          }
 
             List(hits) { hit in
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(hit.item.itemTitle)
-                        Text("Line \(hit.position.line + 1): \(hit.position.match)")
+                        HStack(spacing: 6) {
+                            Text(hit.item.itemTitle)
+                            if hit.item.isReadOnly {
+                                ReadOnlyBadge()
+                            }
+                        }
+                        // The core counts lines from 1. The match is shown with the
+                        // text around it on its line, as 5.0.2's result rows do.
+                        (Text("Line \(hit.position.line): ")
+                            + Text(verbatim: hit.position.before)
+                            + Text(verbatim: hit.position.match).bold().foregroundColor(.accentColor)
+                            + Text(verbatim: hit.position.after))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                     Spacer()
                     Button("Show") {
                         Task { await model.show(hit.item, hit.position) }
                     }
+                    .controlSize(.small)
                     Button("Replace") {
                         Task {
                             await model.recordReplace(replacement)
@@ -87,32 +99,37 @@ struct FindSheet: View {
                             results = await model.findMatches(keyword: keyword, regexp: regexp, ignoreCase: ignoreCase)
                         }
                     }
-                    .disabled(keyword.isEmpty)
+                    // Remote and other non-local entries cannot be replaced in, as in 5.0.2.
+                    .disabled(keyword.isEmpty || hit.item.isReadOnly)
+                    .controlSize(.small)
                 }
+                .padding(.vertical, 2)
             }
-            .frame(minHeight: 160)
+            .listStyle(.bordered(alternatesRowBackgrounds: true))
+            .frame(height: 200)
             .overlay {
                 if searched && results.isEmpty {
                     Text("No matches.").foregroundStyle(.secondary)
+                } else if !searched {
+                    Image(systemName: "text.magnifyingglass")
+                        .font(.system(size: 30, weight: .light))
+                        .foregroundStyle(.tertiary)
                 }
             }
 
             if !status.isEmpty {
                 Text(status).font(.callout).foregroundStyle(.secondary)
             }
-
-            HStack {
-                Button("Done") { dismiss() }
-                Spacer()
-                Button("Find", action: find)
-                    .disabled(keyword.isEmpty)
-                Button("Replace All", action: replaceAll)
-                    .disabled(keyword.isEmpty || results.isEmpty)
-                    .keyboardShortcut(.defaultAction)
-            }
+        } footer: {
+            Button("Done") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+            Spacer()
+            Button("Find", action: find)
+                .disabled(keyword.isEmpty)
+            Button("Replace All", action: replaceAll)
+                .disabled(keyword.isEmpty || !results.contains { !$0.isReadOnly })
+                .keyboardShortcut(.defaultAction)
         }
-        .padding(20)
-        .frame(width: 520)
         .task {
             let config = await model.loadConfig()
             regexp = config["find_is_regexp"] as? Bool ?? false
