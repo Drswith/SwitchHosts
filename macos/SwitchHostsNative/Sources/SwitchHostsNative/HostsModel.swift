@@ -36,6 +36,8 @@ final class HostsModel: ObservableObject {
     @Published var startsHidden = false
     /// Window and tray preferences, mirrored from the core so the views react to changes.
     @Published var useSystemWindowFrame = false
+    /// Mirrors `hide_dock_icon`, so the tray can offer the opposite action.
+    @Published private(set) var dockIconHidden = false
     @Published var trayMiniWindow = true
     @Published var leftPanelShown = true
     @Published var rightPanelShown = false
@@ -66,6 +68,7 @@ final class HostsModel: ObservableObject {
             // Preferences that affect the process itself, applied at launch.
             let hideDock = try await core.call(Bool.self, "config_get", ["hide_dock_icon"])
             DockIcon.apply(hidden: hideDock)
+            dockIconHidden = hideDock
             AppTheme.apply((try? await core.call(String.self, "config_get", ["theme"])) ?? "system")
             eventTask = Task { [weak self] in
                 for await event in core.events where Self.treeChangingEvents.contains(event.name) {
@@ -74,6 +77,10 @@ final class HostsModel: ObservableObject {
             }
             await reload()
             await recoverDataDirIfNeeded()
+            // 5.0.2 opens on the system hosts file.
+            if selection == nil {
+                await select(Self.systemHostsID)
+            }
             await applyStartupPreferences(core)
         } catch {
             errorMessage = error.localizedDescription
@@ -158,6 +165,13 @@ final class HostsModel: ObservableObject {
         }
     }
 
+    /// Shows or hides the Dock icon and saves the choice (`hide_dock_icon`).
+    func setDockIconHidden(_ hidden: Bool) async {
+        DockIcon.apply(hidden: hidden)
+        dockIconHidden = hidden
+        await updateConfig(["hide_dock_icon": hidden])
+    }
+
     /// Re-reads the window, panel, and tray preferences into the published values.
     func loadPreferences() async {
         let config = await loadConfig()
@@ -195,6 +209,10 @@ final class HostsModel: ObservableObject {
             tree = try await core.call([HostsNode].self, "get_list")
             let showTitle = (try? await core.call(Bool.self, "config_get", ["show_title_on_tray"])) ?? false
             trayTitle = TrayTitle.make(tree, show: showTitle)
+            // The sidebar shows how many entries the trashcan holds.
+            if let trash = try? await core.call([TrashItem].self, "get_trashcan_list") {
+                trashItems = trash
+            }
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -214,8 +232,9 @@ final class HostsModel: ObservableObject {
 
     /// Applies a sidebar selection of one or more rows. The row added last
     /// becomes the entry in the editor. The system hosts row is never part of
-    /// a multiple selection.
-    func changeSelection(to ids: Set<String>) async {
+    /// a multiple selection. The rows update at once, so the list keeps what was
+    /// clicked; the entry's content loads after.
+    func changeSelection(to ids: Set<String>) {
         var ids = ids
         let added = ids.subtracting(selectedIDs)
         if added.contains(Self.systemHostsID) {
@@ -225,22 +244,24 @@ final class HostsModel: ObservableObject {
         }
         let primary = added.first(where: ids.contains)
             ?? (selection.map(ids.contains) == true ? selection : ids.first)
-        if primary != selection {
-            await select(primary)
-            guard selection == primary else {
-                // The user kept unsaved edits; the old selection stays.
-                selectedIDs = selection.map { [$0] } ?? []
-                return
+        let previous = selectedIDs
+        selectedIDs = ids
+        guard primary != selection else { return }
+        Task {
+            await select(primary, rows: ids)
+            if selection != primary {
+                // The user kept unsaved edits; the old rows stay selected.
+                selectedIDs = previous
             }
         }
-        selectedIDs = ids
     }
 
-    /// Select an entry and load its content. Folders have no content of their own.
-    func select(_ id: String?) async {
+    /// Select an entry and load its content. Folders have no content of their
+    /// own. `rows` is the whole sidebar selection when several rows are selected.
+    func select(_ id: String?, rows: Set<String>? = nil) async {
         guard await confirmDiscardIfDirty() else { return }
         selection = id
-        selectedIDs = id.map { [$0] } ?? []
+        selectedIDs = rows ?? (id.map { [$0] } ?? [])
         if id == Self.systemHostsID {
             await loadSystemHosts()
             return

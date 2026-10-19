@@ -12,13 +12,18 @@ struct ContentView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             List(selection: Binding(
                 get: { model.selectedIDs },
-                set: { ids in Task { await model.changeSelection(to: ids) } }
+                set: { ids in model.changeSelection(to: ids) }
             )) {
+                // Sidebar labels tint their icons, and turn them white on the selected row.
                 Label("System Hosts", systemImage: "desktopcomputer")
                     .tag(HostsModel.systemHostsID)
                 TreeRows(nodes: model.tree, model: model)
             }
+            .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 220, ideal: CGFloat(model.leftPanelWidth))
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                SidebarFooter(model: model)
+            }
             .toolbar {
                 ToolbarItemGroup {
                     Menu {
@@ -29,41 +34,14 @@ struct ContentView: View {
                     } label: {
                         Label("New", systemImage: "plus")
                     }
+                    .help("New")
                     Button {
                         Task { await model.moveToTrash(ids: model.trashableSelection) }
                     } label: {
                         Label("Move to Trash", systemImage: "trash")
                     }
+                    .help("Move to Trash")
                     .disabled(model.trashableSelection.isEmpty)
-                    Button {
-                        Task {
-                            await model.loadTrash()
-                            model.showTrash = true
-                        }
-                    } label: {
-                        Label("Trash", systemImage: "tray.full")
-                    }
-                    Button {
-                        model.showFind = true
-                    } label: {
-                        Label("Find", systemImage: "magnifyingglass")
-                    }
-                    Button {
-                        model.setRightPanel(shown: !model.rightPanelShown)
-                    } label: {
-                        Label("Info", systemImage: "sidebar.trailing")
-                    }
-                    Menu {
-                        Button("Import Backup…") { model.importBackupWithPanel() }
-                        Button("Import from URL…") { model.showImportURL = true }
-                    } label: {
-                        Label("Import", systemImage: "square.and.arrow.down")
-                    }
-                    Button {
-                        model.exportBackupWithPanel()
-                    } label: {
-                        Label("Export Backup", systemImage: "square.and.arrow.up")
-                    }
                 }
             }
         } detail: {
@@ -73,6 +51,36 @@ struct ContentView: View {
                     Divider()
                     EntryInfoPanel(model: model)
                         .frame(width: CGFloat(model.rightPanelWidth))
+                }
+            }
+            .toolbar {
+                // On the left, next to the sidebar button, so it never crowds the
+                // buttons on the right.
+                ToolbarItem(placement: .navigation) {
+                    CurrentEntryTitle(model: model)
+                }
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        model.showFind = true
+                    } label: {
+                        Label("Find", systemImage: "magnifyingglass")
+                    }
+                    .help("Find and Replace")
+                    Menu {
+                        Button("Import Backup…") { model.importBackupWithPanel() }
+                        Button("Import from URL…") { model.showImportURL = true }
+                        Divider()
+                        Button("Export Backup…") { model.exportBackupWithPanel() }
+                    } label: {
+                        Label("Backup", systemImage: "arrow.up.arrow.down")
+                    }
+                    .help("Backup")
+                    Button {
+                        model.setRightPanel(shown: !model.rightPanelShown)
+                    } label: {
+                        Label("Info", systemImage: "sidebar.trailing")
+                    }
+                    .help("Entry Info")
                 }
             }
         }
@@ -95,51 +103,35 @@ struct ContentView: View {
                 onCancel: { Task { await model.cancelImport() } }
             )
         }
-        .safeAreaInset(edge: .bottom) {
-            VStack(spacing: 0) {
+        .overlay(alignment: .bottom) {
+            // Progress, the update notice, and errors float over the content.
+            VStack(spacing: 8) {
                 if let busy = model.busyMessage {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text(busy)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .background(.bar)
+                    Banner(style: .progress, message: busy) { EmptyView() }
                 }
                 if let notice = model.updateNotice {
-                    HStack(spacing: 8) {
-                        Text(notice.message)
-                            .font(.callout)
-                        Spacer()
+                    Banner(style: .notice, message: notice.message) {
                         Button("Open Release Page") { NSWorkspace.shared.open(notice.url) }
-                        Button {
-                            model.updateNotice = nil
-                        } label: {
-                            Image(systemName: "xmark")
-                        }
-                        .buttonStyle(.borderless)
+                            .controlSize(.small)
+                        DismissButton { model.updateNotice = nil }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .background(.bar)
                 }
                 if let message = model.errorMessage {
-                    HStack(spacing: 8) {
-                        Text(message)
-                            .font(.callout)
-                            .foregroundStyle(.red)
-                        Spacer()
+                    Banner(style: .error, message: message) {
                         if model.retryImportURL != nil {
                             Button("Retry") {
                                 Task { await model.retryURLImport() }
                             }
+                            .controlSize(.small)
                         }
+                        DismissButton { model.errorMessage = nil }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .background(.bar)
                 }
             }
+            .frame(maxWidth: 560)
+            .padding(14)
+            .animation(.easeOut(duration: 0.2), value: model.errorMessage)
+            .animation(.easeOut(duration: 0.2), value: model.busyMessage)
         }
         .sheet(item: $model.entryPrompt) { prompt in
             EntrySheet(prompt: prompt, model: model)
@@ -166,6 +158,42 @@ struct ContentView: View {
     }
 }
 
+/// The foot of the sidebar: the trashcan, with how many entries it holds, as
+/// 5.0.2 keeps it at the bottom of its left panel.
+private struct SidebarFooter: View {
+    @ObservedObject var model: HostsModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Divider()
+            Button {
+                Task {
+                    await model.loadTrash()
+                    model.showTrash = true
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "trash")
+                        .frame(width: 19)
+                    Text("Trash")
+                    Spacer()
+                    if !model.trashItems.isEmpty {
+                        Text(verbatim: "\(model.trashItems.count)")
+                            .font(.caption.monospacedDigit())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.secondary.opacity(0.18)))
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+        }
+    }
+}
 
 /// The hosts tree as sidebar rows. A folder is a disclosure group; its open
 /// state is saved in the tree (`is_collapsed`), as the 5.0.2 sidebar does.
@@ -215,7 +243,9 @@ private struct DraggableRow<Content: View>: View {
                 Color.clear.preference(key: RowHeightKey.self, value: proxy.size.height)
             })
             .onPreferenceChange(RowHeightKey.self) { height = $0 }
-            .onDrag {
+            // `itemProvider` is the drag hook for List rows: unlike `onDrag`, it
+            // leaves a plain click to the list, so the row still gets selected.
+            .itemProvider {
                 TreeDragPayload.provider(for: node.id)
             }
             .onDrop(of: [.text], delegate: TreeDropDelegate(model: model, target: node, height: height))
@@ -267,18 +297,22 @@ private struct TreeDropDelegate: DropDelegate {
     }
 }
 
-/// One row: title, folder marker, and the on/off switch.
+/// One row: the kind's icon, the title, and the on/off switch.
 private struct EntryRow: View {
     let node: HostsNode
     @ObservedObject var model: HostsModel
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: node.symbolName)
-                .foregroundStyle(.secondary)
-            Text(node.title ?? node.id)
-                .fontWeight(node.isFolder ? .semibold : .regular)
-            Spacer()
+        HStack(spacing: 6) {
+            Label {
+                Text(node.title ?? node.id)
+                    .fontWeight(node.isFolder ? .medium : .regular)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } icon: {
+                Image(systemName: node.symbolName)
+            }
+            Spacer(minLength: 6)
             // Every entry has a switch, folders included: switching a folder
             // switches its children by the folder's choice mode (the core's rule).
             Toggle(
@@ -290,7 +324,9 @@ private struct EntryRow: View {
             )
             .labelsHidden()
             .toggleStyle(.switch)
+            .controlSize(.mini)
         }
+        .padding(.vertical, 1)
         .contextMenu {
             Button("Edit…") { model.entryPrompt = .edit(node) }
             if node.isRemote {
@@ -316,28 +352,32 @@ private struct EntryRow: View {
     }
 }
 
-/// Content editor for the selected entry, with Save (⌘S) and an unsaved marker.
+/// Content editor for the selected entry, with Save (⌘S). Read-only kinds get a
+/// strip above the text saying where it comes from.
 private struct EditorPane: View {
     @ObservedObject var model: HostsModel
 
     var body: some View {
         Group {
             if model.selection == nil {
-                Text("Select an entry to edit its content.")
-                    .foregroundStyle(.secondary)
+                EmptyState(symbol: "sidebar.left", message: "Select an entry to edit its content.")
             } else if model.isSystemHostsSelected {
                 // Read-only: the system file changes only through the apply path.
-                HighlightingEditor(text: .constant(model.content), readOnly: true, reveal: model.reveal)
-                    .padding(4)
-                    .toolbar {
-                        ToolbarItem {
-                            Button {
-                                model.showHistory = true
-                            } label: {
-                                Label("History", systemImage: "clock.arrow.circlepath")
-                            }
+                VStack(spacing: 0) {
+                    EditorStrip(symbol: "lock", text: "/etc/hosts") { EmptyView() }
+                    Divider()
+                    HighlightingEditor(text: .constant(model.content), readOnly: true, reveal: model.reveal)
+                }
+                .toolbar {
+                    ToolbarItem {
+                        Button {
+                            model.showHistory = true
+                        } label: {
+                            Label("History", systemImage: "clock.arrow.circlepath")
                         }
+                        .help("History")
                     }
+                }
             } else if let node = model.selectedNode, node.isFolder {
                 FolderPane(model: model, node: node)
             } else if let node = model.selectedNode, node.isGroup {
@@ -345,36 +385,37 @@ private struct EditorPane: View {
                 GroupPane(model: model, node: node)
             } else if let node = model.selectedNode, node.isRemote {
                 // Read-only: the content is whatever the last refresh fetched.
-                VStack(alignment: .leading, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(remoteSource(node))
-                            .font(.callout)
-                            .textSelection(.enabled)
+                VStack(spacing: 0) {
+                    EditorStrip(symbol: node.source == "domain" ? "list.bullet" : "link", text: remoteSource(node)) {
                         if let last = node.lastRefresh {
-                            Text("Last refresh") + Text(": \(last)")
+                            Text("Last refresh") + Text(verbatim: ": \(last)")
                         } else {
                             Text("Not refreshed yet")
                         }
                     }
-                    .foregroundStyle(.secondary)
+                    Divider()
                     HighlightingEditor(text: .constant(model.content), readOnly: true, reveal: model.reveal)
                 }
-                .padding(8)
                 .toolbar {
                     ToolbarItem {
-                        Button("Refresh") {
+                        Button {
                             Task { await model.refreshRemote(node.id) }
+                        } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
                         }
+                        .help("Refresh")
                     }
                 }
             } else {
                 HighlightingEditor(text: $model.content, reveal: model.reveal)
-                    .padding(4)
                     .toolbar {
                         ToolbarItem {
-                            Button("Save") {
+                            Button {
                                 Task { await model.saveContent() }
+                            } label: {
+                                Label("Save", systemImage: "square.and.arrow.down")
                             }
+                            .help("Save")
                             .keyboardShortcut("s", modifiers: .command)
                             .disabled(!model.isDirty)
                         }
@@ -392,6 +433,35 @@ private struct EditorPane: View {
     }
 }
 
+/// A thin strip above a read-only editor: where the text comes from, and a note
+/// on the right.
+private struct EditorStrip<Detail: View>: View {
+    let symbol: String
+    let text: String
+    @ViewBuilder var detail: () -> Detail
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol)
+                .foregroundStyle(.secondary)
+            Text(verbatim: text)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+            Spacer(minLength: 12)
+            // The note keeps its full width; the source truncates instead.
+            detail()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize()
+        }
+        .font(.callout)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+}
+
 /// Asks how to apply a staged backup: append it, replace the tree, or cancel.
 private struct ImportSheet: View {
     let pending: HostsModel.PendingImport
@@ -400,30 +470,27 @@ private struct ImportSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Import “\(pending.name)”")
-                .font(.headline)
+        SheetLayout(symbol: "square.and.arrow.down", title: Text("Import “\(pending.name)”"), width: 440) {
             Text("The backup has \(pending.count) top-level item(s). Append adds them to the current tree; Replace swaps the current tree for them.")
                 .foregroundStyle(.secondary)
-            HStack {
-                Button("Cancel") {
-                    onCancel()
-                    dismiss()
-                }
-                Spacer()
-                Button("Append") {
-                    onCommit("append")
-                    dismiss()
-                }
-                Button("Replace") {
-                    onCommit("replace")
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
+                .fixedSize(horizontal: false, vertical: true)
+        } footer: {
+            Button("Cancel") {
+                onCancel()
+                dismiss()
             }
+            .keyboardShortcut(.cancelAction)
+            Spacer()
+            Button("Append") {
+                onCommit("append")
+                dismiss()
+            }
+            Button("Replace") {
+                onCommit("replace")
+                dismiss()
+            }
+            .keyboardShortcut(.defaultAction)
         }
-        .padding(20)
-        .frame(width: 420)
     }
 }
 
@@ -436,51 +503,53 @@ private struct TrashSheet: View {
     @State private var preview = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Trash").font(.headline)
+        SheetLayout(symbol: "trash", title: Text("Trash"), width: 760) {
             if model.trashItems.isEmpty {
-                Text("The trash is empty.").foregroundStyle(.secondary)
+                EmptyState(symbol: "trash", message: "The trash is empty.")
+                    .frame(height: 260)
             } else {
                 HStack(alignment: .top, spacing: 12) {
                     List(model.trashItems, selection: $selectedID) { item in
-                        HStack {
+                        HStack(spacing: 8) {
                             Label(item.data.title ?? item.data.id, systemImage: item.data.symbolName)
-                            Spacer()
+                                .lineLimit(1)
+                            Spacer(minLength: 6)
                             Button("Restore") {
                                 Task { await model.restore(item) }
                             }
+                            .controlSize(.small)
                             Button("Delete") {
                                 Task { await model.deleteForever(item) }
                             }
+                            .controlSize(.small)
                         }
+                        .padding(.vertical, 2)
                         .tag(item.id)
                     }
-                    .frame(width: 330, height: 260)
+                    .listStyle(.bordered(alternatesRowBackgrounds: true))
+                    .frame(width: 350, height: 280)
                     Group {
                         if selectedItem == nil {
-                            Text("Select an item to see its content.")
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            EmptyState(symbol: "doc.text.magnifyingglass", message: "Select an item to see its content.")
                         } else {
                             HighlightingEditor(text: .constant(preview), readOnly: true, reveal: nil)
                         }
                     }
-                    .frame(width: 330, height: 260)
-                    .border(Color.secondary.opacity(0.3))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 280)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.12)))
                 }
             }
-            HStack {
-                Button("Empty Trash") {
-                    Task { await model.clearTrash() }
-                }
-                .disabled(model.trashItems.isEmpty)
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
+        } footer: {
+            Button("Empty Trash") {
+                Task { await model.clearTrash() }
             }
+            .disabled(model.trashItems.isEmpty)
+            Spacer()
+            Button("Done") { dismiss() }
+                .keyboardShortcut(.defaultAction)
         }
-        .padding(20)
-        .frame(width: 712)
         .task { await model.loadTrash() }
         .onChange(of: selectedID) { _ in
             Task { await loadPreview() }
@@ -539,58 +608,91 @@ struct EntryInfoPanel: View {
     @ObservedObject var model: HostsModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Entry Info")
-                .font(.headline)
-            if model.isSystemHostsSelected {
-                row("Name", "System Hosts")
-                row("Type", LocalizedStringKey("System Hosts"))
-                row("Path", "/etc/hosts")
-            } else if let node = model.selectedNode {
-                row("Name", node.title ?? node.id)
-                row("Type", kindLabel(node))
-                row("Status", LocalizedStringKey(node.isOn ? "Enabled" : "Disabled"))
-                if node.isFolder {
-                    row("Choice Mode", choiceLabel(node.folderMode ?? 0))
-                    row("Entries", "\((node.children ?? []).count)")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Entry Info")
+                    .font(.headline)
+                if model.isSystemHostsSelected {
+                    header(symbol: "desktopcomputer", title: String(localized: "System Hosts"), kind: "System Hosts")
+                    Card {
+                        row("Status") { Text("Read Only") }
+                        row("Path") { Text(verbatim: "/etc/hosts") }
+                    }
+                } else if let node = model.selectedNode {
+                    header(symbol: node.symbolName, title: node.title ?? node.id, kind: kindLabel(node))
+                    Card {
+                        row("Status") { StatusDot(isOn: node.isOn) }
+                        if node.isFolder {
+                            row("Choice Mode") { Text(choiceLabel(node.folderMode ?? 0)) }
+                            row("Entries") { Text(verbatim: "\((node.children ?? []).count)") }
+                        }
+                        if node.isGroup {
+                            row("Content") {
+                                let included = model.includedNodes(of: node)
+                                if included.isEmpty {
+                                    Text(verbatim: "—")
+                                } else {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        ForEach(included) { entry in
+                                            Label(entry.title ?? entry.id, systemImage: entry.symbolName)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if node.isRemote {
+                            row("Source") { Text(LocalizedStringKey(node.source == "domain" ? "Domains" : "URL")) }
+                            row("Address") {
+                                Text(verbatim: node.source == "domain" ? (node.domains ?? []).joined(separator: ", ") : (node.url ?? ""))
+                            }
+                            row("Refresh interval") { Text(verbatim: RefreshInterval.label(node.refreshInterval ?? 0)) }
+                            row("Last refresh") { Text(verbatim: node.lastRefresh ?? "—") }
+                        }
+                    }
+                    if node.isLocal || node.isRemote {
+                        let text = model.content
+                        Card {
+                            row("Size") {
+                                Text(verbatim: ByteCountFormatter.string(fromByteCount: Int64(text.utf8.count), countStyle: .file))
+                            }
+                            row("Lines") {
+                                Text(verbatim: "\(text.split(separator: "\n", omittingEmptySubsequences: false).count)")
+                            }
+                        }
+                    }
+                } else {
+                    EmptyState(symbol: "info.circle", message: "Select an entry to see its details.")
+                        .frame(height: 220)
                 }
-                if node.isGroup {
-                    let titles = model.includedNodes(of: node).map { $0.title ?? $0.id }
-                    row("Content", titles.isEmpty ? "—" : titles.joined(separator: "\n"))
-                }
-                if node.isRemote {
-                    row("Source", LocalizedStringKey(node.source == "domain" ? "Domains" : "URL"))
-                    row("Address", node.source == "domain" ? (node.domains ?? []).joined(separator: ", ") : (node.url ?? ""))
-                    row("Refresh interval", RefreshInterval.label(node.refreshInterval ?? 0))
-                    row("Last refresh", node.lastRefresh ?? "—")
-                }
-                if node.isLocal || node.isRemote {
-                    let text = model.content
-                    row("Size", ByteCountFormatter.string(fromByteCount: Int64(text.utf8.count), countStyle: .file))
-                    row("Lines", "\(text.split(separator: "\n", omittingEmptySubsequences: false).count)")
-                }
-            } else {
-                Text("Select an entry to see its details.")
+            }
+            .padding(14)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private func header(symbol: String, title: String, kind: LocalizedStringKey) -> some View {
+        HStack(spacing: 10) {
+            KindIcon(symbol: symbol, size: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(verbatim: title)
+                    .font(.body.weight(.semibold))
+                    .lineLimit(2)
+                Text(kind)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Spacer()
-        }
-        .padding(14)
-        .frame(maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private func row(_ title: LocalizedStringKey, _ value: LocalizedStringKey) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value).textSelection(.enabled)
         }
     }
 
-    private func row(_ title: LocalizedStringKey, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(verbatim: value).textSelection(.enabled)
+    private func row<Value: View>(_ title: LocalizedStringKey, @ViewBuilder value: () -> Value) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            value()
+                .textSelection(.enabled)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func kindLabel(_ node: HostsNode) -> LocalizedStringKey {
@@ -606,6 +708,60 @@ struct EntryInfoPanel: View {
         case 2: return "Multiple"
         default: return "Default"
         }
+    }
+}
+
+/// The selected entry in the toolbar, as 5.0.2's top bar shows it: its icon and
+/// title, a "Read Only" badge for anything not edited by hand, and its switch
+/// while the sidebar (which has the switches) is hidden.
+private struct CurrentEntryTitle: View {
+    @ObservedObject var model: HostsModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if model.isSystemHostsSelected {
+                Image(systemName: "desktopcomputer")
+                Text("System Hosts").fontWeight(.semibold)
+                ReadOnlyBadge()
+            } else if let node = model.selectedNode {
+                Image(systemName: node.symbolName)
+                Text(node.title ?? node.id)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                if !node.isLocal {
+                    ReadOnlyBadge()
+                } else if model.isDirty {
+                    Text("Unsaved")
+                        .font(.caption2)
+                        .padding(.horizontal, 4)
+                        .background(Color.orange.opacity(0.18), in: RoundedRectangle(cornerRadius: 3))
+                        .foregroundStyle(.orange)
+                }
+                if !model.leftPanelShown {
+                    Toggle(
+                        node.title ?? node.id,
+                        isOn: Binding(
+                            get: { node.isOn },
+                            set: { _ in Task { await model.toggle(node) } }
+                        )
+                    )
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                }
+            }
+        }
+    }
+}
+
+/// A small grey "Read Only" tag, as 5.0.2 shows it.
+struct ReadOnlyBadge: View {
+    var body: some View {
+        Text("Read Only")
+            .font(.caption2)
+            .padding(.horizontal, 4)
+            .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
+            .foregroundStyle(.secondary)
     }
 }
 

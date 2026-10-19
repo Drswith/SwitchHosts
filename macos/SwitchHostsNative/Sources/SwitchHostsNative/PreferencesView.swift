@@ -65,8 +65,7 @@ private struct GeneralTab: View {
                     }
                 Toggle("Hide Dock Icon", isOn: $hideDock)
                     .onChange(of: hideDock) { value in
-                        DockIcon.apply(hidden: value)
-                        Task { await model.updateConfig(["hide_dock_icon": value]) }
+                        Task { await model.setDockIconHidden(value) }
                     }
                 Toggle("Quit App When Main Window Is Closed", isOn: $quitOnClose)
                     .onChange(of: quitOnClose) { value in
