@@ -24,8 +24,13 @@ struct HighlightingEditor: NSViewRepresentable {
         textView.delegate = context.coordinator
         textView.isRichText = false
         textView.allowsUndo = true
-        textView.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        textView.textContainerInset = NSSize(width: 6, height: 6)
+        textView.font = Self.font
+        textView.textContainerInset = NSSize(width: 10, height: 10)
+        textView.drawsBackground = true
+        textView.backgroundColor = .textBackgroundColor
+        textView.insertionPointColor = .controlAccentColor
+        textView.defaultParagraphStyle = Self.paragraph
+        textView.typingAttributes = [.font: Self.font, .paragraphStyle: Self.paragraph, .foregroundColor: NSColor.labelColor]
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
@@ -33,6 +38,8 @@ struct HighlightingEditor: NSViewRepresentable {
         textView.string = text
         Self.highlight(textView)
         context.coordinator.attach(textView)
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .textBackgroundColor
         scroll.hasVerticalRuler = true
         scroll.rulersVisible = true
         scroll.verticalRulerView = LineNumberRuler(scrollView: scroll, textView: textView)
@@ -75,8 +82,9 @@ struct HighlightingEditor: NSViewRepresentable {
         let whole = NSRange(location: 0, length: storage.length)
         storage.beginEditing()
         storage.setAttributes([
-            .font: textView.font ?? NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
+            .font: font,
             .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: paragraph,
         ], range: whole)
 
         let source = storage.string as NSString
@@ -94,6 +102,14 @@ struct HighlightingEditor: NSViewRepresentable {
         }
         storage.endEditing()
     }
+
+    /// The editor's text: 13 pt monospaced with a little extra line height.
+    static let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    static let paragraph: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.lineHeightMultiple = 1.15
+        return style
+    }()
 
     private static let commentPattern = try! NSRegularExpression(pattern: "^[ \\t]*#.*$", options: [.anchorsMatchLines])
     private static let addressPattern = try! NSRegularExpression(pattern: "^[ \\t]*([0-9A-Fa-f.:]+)", options: [.anchorsMatchLines])
@@ -175,7 +191,7 @@ struct HighlightingEditor: NSViewRepresentable {
 /// get numbers of their own.
 final class LineNumberRuler: NSRulerView {
     private weak var editor: NSTextView?
-    private let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+    private let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
 
     init(scrollView: NSScrollView, textView: NSTextView) {
         editor = textView
@@ -212,12 +228,17 @@ final class LineNumberRuler: NSRulerView {
     }
 
     override func drawHashMarksAndLabels(in rect: NSRect) {
-        NSColor.windowBackgroundColor.setFill()
+        NSColor.textBackgroundColor.setFill()
         rect.fill()
+        // A hairline between the numbers and the text.
+        NSColor.separatorColor.setFill()
+        NSRect(x: bounds.maxX - 1, y: rect.minY, width: 1, height: rect.height).fill()
         guard let editor, let layoutManager = editor.layoutManager, let container = editor.textContainer else { return }
         let text = editor.string as NSString
-        let attributes: [NSAttributedString.Key: Any] = [.font: numberFont, .foregroundColor: NSColor.secondaryLabelColor]
-        let origin = convert(NSPoint.zero, from: editor)
+        let attributes: [NSAttributedString.Key: Any] = [.font: numberFont, .foregroundColor: NSColor.tertiaryLabelColor]
+        // Line fragments are in text-container space, which starts at the inset.
+        var origin = convert(NSPoint.zero, from: editor)
+        origin.y += editor.textContainerOrigin.y
         let visibleGlyphs = layoutManager.glyphRange(forBoundingRect: editor.visibleRect, in: container)
         layoutManager.enumerateLineFragments(forGlyphRange: visibleGlyphs) { fragment, _, _, glyphRange, _ in
             let characters = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
@@ -228,7 +249,17 @@ final class LineNumberRuler: NSRulerView {
             let label = "\(number)" as NSString
             let size = label.size(withAttributes: attributes)
             let y = origin.y + fragment.minY + (fragment.height - size.height) / 2
-            label.draw(at: NSPoint(x: self.ruleThickness - size.width - 6, y: y), withAttributes: attributes)
+            label.draw(at: NSPoint(x: self.ruleThickness - size.width - 8, y: y), withAttributes: attributes)
+        }
+        // The empty line after a final newline has no fragment of its own; number
+        // it too, so the gutter counts the same lines as the info panel.
+        let extra = layoutManager.extraLineFragmentRect
+        if text.length > 0, text.character(at: text.length - 1) == 10, extra.height > 0,
+           extra.intersects(editor.visibleRect) {
+            let label = "\(1 + Self.newlineCount(in: editor.string))" as NSString
+            let size = label.size(withAttributes: attributes)
+            let y = origin.y + extra.minY + (extra.height - size.height) / 2
+            label.draw(at: NSPoint(x: ruleThickness - size.width - 8, y: y), withAttributes: attributes)
         }
     }
 

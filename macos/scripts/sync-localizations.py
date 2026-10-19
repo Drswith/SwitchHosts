@@ -149,6 +149,10 @@ KEYS = {
     "Use Default Location": "data_dir_use_default",
     "Choose New Folder…": "data_dir_choose_new",
     "Set Write Mode": "write_mode_set",
+    "Show Main Window": "show_main_window",
+    "Show Dock Icon": "show_dock_icon",
+    "Acknowledgements": "acknowledgement",
+    "Source Code": "source_code",
 }
 
 # Chinese strings the renderer dictionaries do not have yet. These are written
@@ -178,10 +182,8 @@ OVERRIDES = {
         "Not running.": "未运行。",
         "Off.": "已关闭。",
         "Only accept connections from this Mac": "仅接受来自本机的连接",
-        "Open SwitchHosts": "打开 SwitchHosts",
         "Overwrite the whole file": "覆盖整个文件",
         "Privileged Helper": "特权 helper",
-        "Quit SwitchHosts": "退出 SwitchHosts",
         "Regular expression": "正则表达式",
         "Remove duplicate records": "移除重复记录",
         "Repair": "修复",
@@ -350,6 +352,9 @@ OVERRIDES = {
         "command timed out after %@s": "命令在 %@ 秒后超时",
         "Server returned HTTP %@.": "服务器返回了 HTTP %@。",
         "Info": "信息",
+        "Backup": "备份",
+        "Unsaved": "未保存",
+        "In This Folder": "此文件夹中的条目",
         "New Group": "新建组合",
         "New Folder": "新建文件夹",
         "Edit…": "编辑…",

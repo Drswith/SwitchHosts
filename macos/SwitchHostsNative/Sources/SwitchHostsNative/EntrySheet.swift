@@ -106,55 +106,53 @@ struct EntrySheet: View {
     @State private var folderMode = 0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(isNew ? LocalizedStringKey("Add Hosts Entry") : LocalizedStringKey("Edit Hosts"))
-                .font(.headline)
-
-            field("Hosts Type") {
-                Picker("Hosts Type", selection: $kind) {
-                    ForEach(EntryKind.allCases) { kind in
-                        Label(kind.label, systemImage: kind.symbolName).tag(kind)
+        SheetLayout(
+            symbol: kind.symbolName,
+            title: Text(isNew ? LocalizedStringKey("Add Hosts Entry") : LocalizedStringKey("Edit Hosts")),
+            width: 520
+        ) {
+            Card {
+                field("Hosts Type") {
+                    Picker("Hosts Type", selection: $kind) {
+                        ForEach(EntryKind.allCases) { kind in
+                            Label(kind.label, systemImage: kind.symbolName).tag(kind)
+                        }
                     }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .disabled(!isNew)
-            }
-
-            field("Hosts Title") {
-                TextField("Hosts Title", text: $title)
-                    .textFieldStyle(.roundedBorder)
+                    .pickerStyle(.segmented)
                     .labelsHidden()
-                    .onSubmit(submit)
+                    .disabled(!isNew)
+                }
+                field("Hosts Title") {
+                    TextField("Hosts Title", text: $title)
+                        .textFieldStyle(.roundedBorder)
+                        .labelsHidden()
+                        .onSubmit(submit)
+                }
             }
-
             switch kind {
             case .local:
                 EmptyView()
             case .remote:
-                remoteFields
+                Card { remoteFields }
             case .group:
-                groupFields
+                Card { groupFields }
             case .folder:
-                folderFields
+                Card { folderFields }
             }
-
-            HStack {
-                if case .edit(let node) = prompt {
-                    Button("Move to Trash") {
-                        dismiss()
-                        Task { await model.moveToTrash(node.id) }
-                    }
+        } footer: {
+            if case .edit(let node) = prompt {
+                Button("Move to Trash") {
+                    dismiss()
+                    Task { await model.moveToTrash(node.id) }
                 }
-                Spacer()
-                Button("Cancel") { dismiss() }
-                Button("OK", action: submit)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canSave)
             }
+            Spacer()
+            Button("Cancel") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+            Button("OK", action: submit)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canSave)
         }
-        .padding(20)
-        .frame(width: 520)
         .onAppear(perform: load)
     }
 
@@ -221,8 +219,9 @@ struct EntrySheet: View {
                     }
                     .toggleStyle(.checkbox)
                 }
+                .listStyle(.bordered(alternatesRowBackgrounds: true))
                 // Short enough that the sheet fits the window at its minimum height.
-                .frame(height: 150)
+                .frame(height: 140)
             }
         }
     }

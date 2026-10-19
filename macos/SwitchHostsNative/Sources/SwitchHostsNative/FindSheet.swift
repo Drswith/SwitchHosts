@@ -23,9 +23,8 @@ struct FindSheet: View {
     @State private var searched = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Find and Replace").font(.headline)
-
+        SheetLayout(symbol: "magnifyingglass", title: Text("Find and Replace"), width: 620) {
+          Card {
             HStack(spacing: 4) {
                 TextField("Find", text: $keyword)
                     .textFieldStyle(.roundedBorder)
@@ -60,11 +59,12 @@ struct FindSheet: View {
                 .disabled(replaceHistory.isEmpty)
             }
 
-            HStack {
+            HStack(spacing: 16) {
                 Toggle("Regular expression", isOn: $regexp)
                 Toggle("Ignore case", isOn: $ignoreCase)
                 Spacer()
             }
+          }
 
             List(hits) { hit in
                 HStack {
@@ -72,11 +72,7 @@ struct FindSheet: View {
                         HStack(spacing: 6) {
                             Text(hit.item.itemTitle)
                             if hit.item.isReadOnly {
-                                Text("Read Only")
-                                    .font(.caption2)
-                                    .padding(.horizontal, 4)
-                                    .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
-                                    .foregroundStyle(.secondary)
+                                ReadOnlyBadge()
                             }
                         }
                         // The core counts lines from 1. The match is shown with the
@@ -94,6 +90,7 @@ struct FindSheet: View {
                     Button("Show") {
                         Task { await model.show(hit.item, hit.position) }
                     }
+                    .controlSize(.small)
                     Button("Replace") {
                         Task {
                             await model.recordReplace(replacement)
@@ -104,31 +101,35 @@ struct FindSheet: View {
                     }
                     // Remote and other non-local entries cannot be replaced in, as in 5.0.2.
                     .disabled(keyword.isEmpty || hit.item.isReadOnly)
+                    .controlSize(.small)
                 }
+                .padding(.vertical, 2)
             }
-            .frame(minHeight: 160)
+            .listStyle(.bordered(alternatesRowBackgrounds: true))
+            .frame(height: 200)
             .overlay {
                 if searched && results.isEmpty {
                     Text("No matches.").foregroundStyle(.secondary)
+                } else if !searched {
+                    Image(systemName: "text.magnifyingglass")
+                        .font(.system(size: 30, weight: .light))
+                        .foregroundStyle(.tertiary)
                 }
             }
 
             if !status.isEmpty {
                 Text(status).font(.callout).foregroundStyle(.secondary)
             }
-
-            HStack {
-                Button("Done") { dismiss() }
-                Spacer()
-                Button("Find", action: find)
-                    .disabled(keyword.isEmpty)
-                Button("Replace All", action: replaceAll)
-                    .disabled(keyword.isEmpty || !results.contains { !$0.isReadOnly })
-                    .keyboardShortcut(.defaultAction)
-            }
+        } footer: {
+            Button("Done") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+            Spacer()
+            Button("Find", action: find)
+                .disabled(keyword.isEmpty)
+            Button("Replace All", action: replaceAll)
+                .disabled(keyword.isEmpty || !results.contains { !$0.isReadOnly })
+                .keyboardShortcut(.defaultAction)
         }
-        .padding(20)
-        .frame(width: 520)
         .task {
             let config = await model.loadConfig()
             regexp = config["find_is_regexp"] as? Bool ?? false
