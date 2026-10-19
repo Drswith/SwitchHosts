@@ -14,6 +14,9 @@ default-run = "switchhosts"
 name = "switchhosts_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[dev-dependencies]
+swh-core = { path = "../crates/swh-core", features = ["test-support"] }
+
 [features]
 # Opt-in: requires a logged-in macOS desktop and creates native test windows.
 native-tray-tests = []
@@ -28,6 +31,9 @@ tauri-build = { version = "2.7.1", features = [] }
 serde_json = "1.0.151"
 
 [dependencies]
+# Tauri-free core (storage, hosts apply, remote fetch, migration). Shared
+# with the native macOS app; see crates/swh-core.
+swh-core = { path = "../crates/swh-core" }
 # Tauri 2.12 uses tray-icon 0.25, which restores left-click forwarding on
 # macOS 27 when a tray menu is attached (tauri-apps/tray-icon#365).
 tauri = { version = "2.12.1", features = ["macos-private-api", "tray-icon", "image-png"] }

@@ -17,6 +17,7 @@
 //! handler in `lib.rs` can route them in the same dispatch table as
 //! `popup_menu_item_*` events.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -161,7 +162,7 @@ fn handle_left_click<R: Runtime + 'static>(
     icon_rect: TauriRect,
 ) {
     let (mini_enabled, in_recovery) = {
-        let state = app.state::<AppState>();
+        let state = app.state::<Arc<AppState>>();
         let mini = state
             .config
             .lock()
@@ -270,7 +271,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> Result<Menu<R>, tauri::Error> {
 
 #[cfg(target_os = "macos")]
 fn read_hide_dock_icon<R: Runtime>(app: &AppHandle<R>) -> bool {
-    let state = app.state::<AppState>();
+    let state = app.state::<Arc<AppState>>();
     state
         .config
         .lock()
@@ -314,7 +315,7 @@ fn quit_app<R: Runtime>(app: &AppHandle<R>) {
 
 #[cfg(target_os = "macos")]
 fn toggle_dock_icon<R: Runtime>(app: &AppHandle<R>) {
-    let state = app.state::<AppState>();
+    let state = app.state::<Arc<AppState>>();
     // Serialize with `commit_config_patch` writers — without this guard
     // a concurrent Preferences toggle racing this tray click can both
     // observe the same `cfg`, flip it, and clobber each other's save.
@@ -498,7 +499,7 @@ fn show_tray_window<R: Runtime>(
 fn create_tray_window<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<tauri::WebviewWindow<R>, tauri::Error> {
-    let height = match app.state::<AppState>().read_manifest() {
+    let height = match app.state::<Arc<AppState>>().read_manifest() {
         Ok(manifest) => window::initial_height(&manifest.root),
         Err(error) => {
             log::warn!("failed to read tray list for initial size: {error}");
