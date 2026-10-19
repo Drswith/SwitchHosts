@@ -166,6 +166,34 @@ final class TreeDocumentTests: XCTestCase {
         XCTAssertEqual(TreeDocument.find("a", in: tree)?.ancestors, ["f"])
     }
 
+    func testAppendFolderAndGroupAtTheTopLevelOrInsideAFolder() {
+        var tree = sample()
+        XCTAssertTrue(TreeDocument.appendFolder(id: "f2", title: "F2", folderMode: 1, parentID: nil, to: &tree))
+        let folder = TreeDocument.find("f2", in: tree)?.node
+        XCTAssertEqual(folder?["type"] as? String, "folder")
+        XCTAssertEqual(folder?["folder_mode"] as? Int, 1)
+        XCTAssertEqual((folder?["children"] as? [TreeDocument.Node])?.count, 0, "a new folder is empty")
+
+        XCTAssertTrue(TreeDocument.appendGroup(id: "g", title: "G", include: ["a", "b"], parentID: "f", to: &tree))
+        let group = TreeDocument.find("g", in: tree)
+        XCTAssertEqual(group?.node["type"] as? String, "group")
+        XCTAssertEqual(group?.node["include"] as? [String], ["a", "b"])
+        XCTAssertEqual(group?.ancestors, ["f"])
+
+        XCTAssertFalse(TreeDocument.appendFolder(id: "x", title: "X", folderMode: 0, parentID: "a", to: &tree),
+                       "a local entry cannot hold a folder")
+    }
+
+    func testSetIncludeChangesOnlyGroups() {
+        var tree = sample()
+        TreeDocument.appendGroup(id: "g", title: "G", include: ["a"], parentID: nil, to: &tree)
+        XCTAssertTrue(TreeDocument.setInclude("g", ["b", "a"], in: &tree))
+        XCTAssertEqual(TreeDocument.find("g", in: tree)?.node["include"] as? [String], ["b", "a"], "the chosen order is kept")
+        XCTAssertFalse(TreeDocument.setInclude("a", ["b"], in: &tree), "a local entry is not a group")
+        XCTAssertNil(TreeDocument.find("a", in: tree)?.node["include"])
+        XCTAssertFalse(TreeDocument.setInclude("missing", [], in: &tree))
+    }
+
     func testDropRefusesSelfDescendantsAndNonFolders() {
         var tree = sample()
         XCTAssertFalse(TreeDocument.move("a", relativeTo: "a", placement: .before, in: &tree))

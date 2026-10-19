@@ -22,10 +22,8 @@ struct HistorySheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("System Hosts Version History")
-                .font(.headline)
-
+        SheetLayout(symbol: "clock.arrow.circlepath", title: Text("System Hosts Version History"), width: 780) {
+          Card {
             HStack {
                 Toggle("Record history", isOn: Binding(
                     get: { recording },
@@ -51,11 +49,11 @@ struct HistorySheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+          }
 
             if records.isEmpty {
-                Text("No Records")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 300)
+                EmptyState(symbol: "clock", message: "No Records")
+                    .frame(height: 300)
             } else {
                 HStack(spacing: 12) {
                     List(records, selection: $selectedID) { record in
@@ -70,30 +68,29 @@ struct HistorySheet: View {
                         }
                         .tag(record.id)
                     }
+                    .listStyle(.bordered(alternatesRowBackgrounds: true))
                     .frame(width: 240)
 
                     HighlightingEditor(text: .constant(selected?.content ?? ""), readOnly: true)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.12)))
                 }
-                .frame(minHeight: 300)
+                .frame(height: 300)
             }
-
-            HStack {
-                Button("Clear History", role: .destructive) {
-                    Task { await confirmClear() }
-                }
-                .disabled(records.isEmpty)
-                Spacer()
-                Button("Delete selected") {
-                    Task { await confirmDelete() }
-                }
-                .disabled(selected == nil)
-                Button("Close") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
+        } footer: {
+            Button("Clear History", role: .destructive) {
+                Task { await confirmClear() }
             }
+            .disabled(records.isEmpty)
+            Spacer()
+            Button("Delete selected") {
+                Task { await confirmDelete() }
+            }
+            .disabled(selected == nil)
+            Button("Close") { dismiss() }
+                .keyboardShortcut(.defaultAction)
         }
-        .padding(20)
-        .frame(width: 760, height: 520)
         .task { await load() }
     }
 

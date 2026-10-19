@@ -21,9 +21,11 @@ public struct HostsNode: Decodable, Identifiable, Equatable, Sendable {
     public let isCollapsed: Bool?
     /// Folders: 0 inherits the global choice mode, 1 allows one enabled child, 2 allows many.
     public let folderMode: Int?
+    /// Groups: the ids of the local and remote entries the group lists.
+    public let include: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case id, title, type, on, children, source, url, domains
+        case id, title, type, on, children, source, url, domains, include
         case isSys = "is_sys"
         case refreshInterval = "refresh_interval"
         case lastRefresh = "last_refresh"
@@ -33,6 +35,10 @@ public struct HostsNode: Decodable, Identifiable, Equatable, Sendable {
 
     public var isFolder: Bool { type == "folder" }
     public var isRemote: Bool { type == "remote" }
+    public var isGroup: Bool { type == "group" }
+    /// Local entries are the only ones whose content is edited by hand. A
+    /// missing type is local, as in older data.
+    public var isLocal: Bool { type == nil || type == "local" }
     public var isOn: Bool { on ?? false }
     public var isClosed: Bool { isCollapsed ?? false }
 }

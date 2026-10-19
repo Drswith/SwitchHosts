@@ -25,6 +25,18 @@ enum DockIcon {
     }
 }
 
+/// The app's appearance, matching the `theme` preference: "light", "dark", or
+/// anything else to follow the system.
+enum AppTheme {
+    static func apply(_ theme: String) {
+        switch theme {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: NSApp.appearance = nil
+        }
+    }
+}
+
 /// Restarts the app: a new copy starts once this one has exited. Used after the
 /// data folder changes, because the core opens its folder only at launch.
 enum AppRelaunch {

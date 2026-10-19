@@ -65,8 +65,7 @@ private struct GeneralTab: View {
                     }
                 Toggle("Hide Dock Icon", isOn: $hideDock)
                     .onChange(of: hideDock) { value in
-                        DockIcon.apply(hidden: value)
-                        Task { await model.updateConfig(["hide_dock_icon": value]) }
+                        Task { await model.setDockIconHidden(value) }
                     }
                 Toggle("Quit App When Main Window Is Closed", isOn: $quitOnClose)
                     .onChange(of: quitOnClose) { value in
@@ -79,7 +78,7 @@ private struct GeneralTab: View {
                     Text("Dark").tag("dark")
                 }
                 .onChange(of: theme) { value in
-                    NSApp.appearance = appearance(for: value)
+                    AppTheme.apply(value)
                     Task { await model.updateConfig(["theme": value]) }
                 }
                 Toggle("Use System Window Frame", isOn: $useSystemFrame)
@@ -219,14 +218,6 @@ private struct GeneralTab: View {
     private func runHelper(_ command: String) {
         Task {
             helperStatus = await model.helperCommand(command)
-        }
-    }
-
-    private func appearance(for theme: String) -> NSAppearance? {
-        switch theme {
-        case "light": return NSAppearance(named: .aqua)
-        case "dark": return NSAppearance(named: .darkAqua)
-        default: return nil
         }
     }
 }
