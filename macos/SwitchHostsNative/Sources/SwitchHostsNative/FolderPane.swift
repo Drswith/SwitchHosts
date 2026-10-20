@@ -1,58 +1,36 @@
 import SwiftUI
 import SwitchHostsCore
 
-/// Settings for a folder, shown in the detail pane instead of an editor. A
-/// folder has no content of its own; its choice mode decides how its children
-/// switch on and off.
-struct FolderPane: View {
+/// A folder's settings, at the head of the list when the folder's view is
+/// shown: its choice mode, which decides how its children switch on and off,
+/// and its own switch. A folder has no content of its own.
+struct FolderControls: View {
     @ObservedObject var model: HostsModel
-    let node: HostsNode
+    let folder: HostsNode
 
     var body: some View {
-        let mode = node.folderMode ?? 0
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                PaneHeader(symbol: "folder", title: node.title ?? node.id, subtitle: "Folder") {
-                    Button("Edit…") { model.entryPrompt = .edit(node) }
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    CardTitle("Choice Mode")
-                    Card {
-                        Picker("Choice Mode", selection: Binding(
-                            get: { mode },
-                            set: { value in Task { await model.setFolderMode(node.id, mode: value) } }
-                        )) {
-                            Text("Default").tag(0)
-                            Text("Single").tag(1)
-                            Text("Multiple").tag(2)
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(maxWidth: 360)
-                        Text(Self.effect(of: mode))
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    CardTitle("In This Folder")
-                    Card {
-                        let children = node.children ?? []
-                        if children.isEmpty {
-                            Text("No entries yet.")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            ForEach(children) { child in
-                                EntrySummaryRow(node: child)
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(24)
-            .frame(maxWidth: 620, alignment: .leading)
-            .frame(maxWidth: .infinity)
+        Picker("Choice Mode", selection: Binding(
+            get: { folder.folderMode ?? 0 },
+            set: { value in Task { await model.setFolderMode(folder.id, mode: value) } }
+        )) {
+            Text("Default").tag(0)
+            Text("Single").tag(1)
+            Text("Multiple").tag(2)
         }
+        .pickerStyle(.menu)
+        .fixedSize()
+        .help(Text(Self.effect(of: folder.folderMode ?? 0)))
+        // Switching a folder switches its children by its choice mode (the core's rule).
+        Toggle(
+            folder.title ?? folder.id,
+            isOn: Binding(
+                get: { folder.isOn },
+                set: { _ in Task { await model.toggle(folder) } }
+            )
+        )
+        .labelsHidden()
+        .toggleStyle(BrandSwitchStyle())
+        .help(Text(folder.isOn ? "Enabled" : "Disabled"))
     }
 
     static func effect(of mode: Int) -> LocalizedStringKey {
@@ -64,41 +42,31 @@ struct FolderPane: View {
     }
 }
 
-/// A group in the detail pane. As in 5.0.2 it has no editable content: it
-/// lists the local and remote entries it includes, and is changed with Edit.
+/// The entries a group lists, or a trashed folder holds. As in 5.0.2 a group
+/// has no editable content: it lists the local and remote entries it
+/// includes, and is changed with Edit.
 struct GroupPane: View {
-    @ObservedObject var model: HostsModel
-    let node: HostsNode
+    let entries: [HostsNode]
+    let emptyMessage: LocalizedStringKey
 
     var body: some View {
-        let included = model.includedNodes(of: node)
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                PaneHeader(symbol: node.symbolName, title: node.title ?? node.id, subtitle: "Group") {
-                    Button("Edit…") { model.entryPrompt = .edit(node) }
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    CardTitle("Content")
-                    Card {
-                        if included.isEmpty {
-                            Text("No entries included.")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            ForEach(included) { entry in
-                                EntrySummaryRow(node: entry)
-                            }
-                        }
+        VStack(alignment: .leading, spacing: 6) {
+            CardTitle("Content")
+            Card {
+                if entries.isEmpty {
+                    Text(emptyMessage)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(entries) { entry in
+                        EntrySummaryRow(node: entry)
                     }
                 }
             }
-            .padding(24)
-            .frame(maxWidth: 620, alignment: .leading)
-            .frame(maxWidth: .infinity)
         }
     }
 }
 
-/// One entry inside a folder or group pane: its icon, title, and whether it is on.
+/// One entry inside a group: its icon, title, and whether it is on.
 private struct EntrySummaryRow: View {
     let node: HostsNode
 

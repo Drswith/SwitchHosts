@@ -8,7 +8,7 @@ struct ImportURLSheet: View {
     @State private var address = ""
 
     var body: some View {
-        SheetLayout(symbol: "link", title: Text("Import from URL"), width: 460) {
+        SheetLayout(title: Text("Import from URL"), width: 460) {
             Card {
                 TextField("https://example.com/backup.json", text: $address)
                     .textFieldStyle(.roundedBorder)
