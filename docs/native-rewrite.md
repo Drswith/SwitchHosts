@@ -136,6 +136,45 @@
 - [x] 界面整理：侧栏使用系统的侧栏图标着色、较小的开关、底部回收站入口与数量；编辑器 13 pt 等宽字体、行距与内边距、带分隔线的行号栏（含末尾空行的行号）；只读条目在编辑器上方显示来源条；右侧信息面板改为卡片；文件夹与组合面板有标题区与卡片；提示条改为浮动的圆角卡片并可关闭；所有弹出窗口使用统一的标题、卡片与底部操作栏；菜单栏窗口有应用标题、紧凑的行与菜单样式的按钮。浅色与深色外观都在真实窗口中核对过。
 - [x] 托盘窗口的新样式已在真实窗口中确认（从菜单栏溢出区打开）：应用标题、各条目与开关（含文件夹）、显示主窗口、隐藏/显示任务栏图标（点击后 Dock 图标消失、再点恢复）、退出与版本号。
 
+### H10 界面重做（1c）
+
+按 `1c 三栏方案`（设计稿 `SwitchHosts macOS Redesign.dc.html` 的 4a 定稿）重做原生前端。Rust 内核、FFI、`src-tauri` 与 `SwitchHostsCore` 的 Swift 接口没有改动，所有数据操作仍走原有命令；视图状态（侧栏选中）存在 UserDefaults，不写内核配置，数据与 5.0.2 互通。
+
+- [x] 主题：`Theme.swift` 的 `Brand` 定义 accent / accentSoft / accentInk、IP、注释、行号、关闭的开关、搜索高亮，各有浅色与深色值，accent 设为主窗口、偏好、菜单栏窗口与弹窗的 tint。`Card`、`PaneHeader`、`SheetLayout` 去掉了彩色图标块和描边；新增 `Tag`（类型、状态等小标签）与列表行用的 `BrandSwitchStyle`。
+- [x] 编辑器：IP 紫、注释暖灰、`SWITCHHOSTS_CONTENT_START/END` 两行用 accent；行高 1.55；行号栏宽 56、无分隔线，行号按每行基线对齐（空行的字形位置比正文低 3 pt，所以不用字形位置）；停止输入 0.6 秒后回调（`Debouncer`，有测试）。
+- [x] 自动保存：`HostsModel` 按顺序写入 `set_hosts_content`（后发的不会被先发的覆盖）；停止输入、切换条目、窗口失焦、关窗时立即保存，退出前有未保存内容时等写完再退出（`applicationShouldTerminate`）。删除了保存按钮与 ⌘S、「未保存」标记。保存失败时显示原有的错误提示条，此时切换条目会询问是否放弃。
+- [x] 模型：侧栏选中（system / all / active / remote / folder(id) / trash）存在 UserDefaults 的 `SidebarSelection`；`Library` 计算各视图的行（全部 = 树的深度优先顺序中的非文件夹条目，已启用 = 其中 `isOn` 的，远程 = 远程条目，文件夹 = 直接子项）、标题搜索与计数。首次启动选中「系统 Hosts → 当前」，以后恢复上次的视图。
+- [x] 主窗口：`NavigationSplitView` 三列。侧栏（212）有「资源库」「文件夹」两组，嵌套文件夹每层缩进 16，回收站固定在底部，选中为 accentSoft 底 + accentInk；列表（300）的标题与副标题在工具栏中，行是两行文字加开关，选中为实心 accent，系统 Hosts 列出「当前」与历史快照，回收站列出已删除项；详情为 22 pt 标题与一排标签，远程有来源条，快照有只读提示条与「删除快照…」，回收站为「彻底删除…」（红字，需确认）与「恢复」，组合显示所含条目。删除了 `EntryInfoPanel`、`TrashSheet`、`HistorySheet` 与它们的入口，保留右键菜单与 ⌘ / ⇧ 多选移入回收站；列表支持 ↑↓ 与 Delete 键。
+- [x] 拖拽：全部复用 `drop(_:onto:placement:)` 与「移动到文件夹」。「全部方案」与文件夹视图中，拖到行的上半 / 下半放在目标（在其父级中）之前 / 之后；「已启用」「远程」视图不能排序；拖到侧栏文件夹移入该文件夹，拖到「全部方案」移到顶层（已在该处时不变）；侧栏文件夹之间可排序与嵌套；拖进自己或子孙时悬停不显示落点，落下也会被内核规则拒绝。
+- [x] 其余界面：菜单栏窗口宽 300，头部为图标、名称、「N 个方案生效」与打开主窗口按钮，已启用的条目加粗，底部为菜单样式按钮与版本号；偏好设置四页都是 `Form(.grouped)`，开关为 accent，主题改为分段控件，历史的「记录历史」与「最大记录数」移到「高级」；新建 / 编辑顶部为四个类型方块（编辑时禁用），下面为分组表单，底部「取消 / 创建」；查找替换的「.*」「Aa」在输入框内，结果按条目分组并高亮匹配，只读条目带标记、不可替换，底部「完成 / 查找 / 全部替换（N）」。
+- [x] 本地化：新字符串加入 `sync-localizations.py` 的 `OVERRIDES`。新增 `macos/scripts/check-localizations.sh`：用编译器的 `-emit-localized-strings` 取出源码中的全部键，与生成的中文对比；当前 265 个键，0 个缺失（产品名、协议名、路径与示例地址按原文保留，列在 `KEEP_AS_IS`）。
+
+验证（真实窗口，测试副本 `net.oldj.switchhosts.native.check`，隔离的 HOME，写入模式为空，真实数据与 `/etc/hosts` 未改动）：
+
+- 三种拖拽都写入了 `manifest.json`：列表条目拖到侧栏文件夹（进入）、列表内拖到另一行上半部分（排到前面）、条目拖到「全部方案」（移到顶层）；侧栏文件夹拖到另一文件夹中部（嵌套）。把文件夹拖进自己的子文件夹时不显示落点，松开后树不变。
+- 「远程」视图中拖动条目不显示落点，顺序不变。
+- 自动保存：编辑后不点任何按钮，约 1.5 秒内文件已更新；输入后立即点另一行，内容已保存；退出再打开，内容一致；列表行与标题下的行数随编辑实时变化。
+- 计数随树实时变化（移动、恢复、移入回收站后侧栏数字即时更新）。开关会写入 `/etc/hosts`，所以开关后的计数与「已启用」列表由模型测试覆盖（`SidebarModelTests.testCountsAndTheActiveListFollowTheTree`：模拟开关提交后的 `manifest.json` 并 `reload`）。
+- ⌘ 点击多选、侧栏点击、↑↓ 切换均正常。
+
+截图：`macos/build/screenshots-1c/`（本地生成，不提交：「当前」视图显示的是本机的 `/etc/hosts`）。主窗口按 浅色 / 深色 × 英文 / 中文 各 8 张：`all`、`active`、`remote`、`folder`、`system-current`、`system-snapshot`、`trash`、`empty`（空文件夹），文件名为 `<light|dark>-<en|zh-Hans>-<视图>.png`；另有 `light-zh-Hans-` 的 `menubar`、`preferences-general`、`preferences-advanced`、`entry-sheet`、`find`，以及 `dark-en-` 的 `entry-sheet`、`find`。
+
+与规范不一致的地方及原因：
+
+- 列表行的开关是 `Toggle` 加自定义的 `BrandSwitchStyle`（辅助功能仍是开关），不是系统的 `.switch`：系统开关不能设置关闭态颜色，也不能做出选中行上的「白色轨道 + accent 滑块」。文件夹开关与之一致；菜单栏窗口与偏好设置用系统 `.switch` 加 accent。
+- 侧栏与列表的行是自绘的（`ScrollView` 加自定义行），不是 `List` 的系统选中样式：系统 List 的选中色跟随系统强调色，做不出 accentSoft 底或实心 accent 行。键盘的 ↑↓、Delete 与 ⌘ / ⇧ 多选已补上；macOS 13 上列表获得焦点时会显示焦点环（14 起已隐藏）。
+- 侧栏的「资源库」标题固定在滚动区之外：在 macOS 26 / 27 上，贴着工具栏的滚动视图绘制位置与点击位置相差一个工具栏高度（实测点击落到下一行）。
+- 「使用系统窗口边框」关闭时不再隐藏标题文字，因为列表栏的标题与副标题就是窗口标题；该偏好仍决定内容是否延伸到标题栏下。
+- 历史快照的副标题是「N 行 · 大小」，不是设计稿的「应用 basic, shared」：Swift 侧的 `ApplyRecord` 没有对应字段，按约束不改 `SwitchHostsCore` 接口。「当前」的副标题是 `/etc/hosts · 追加 / 覆盖`（写入模式，未设置时只显示路径）。
+- 启动时恢复上次的侧栏视图（规范要求存在 UserDefaults），只有首次启动或上次在「系统 Hosts」时选中「当前」。
+- 侧栏文件夹不能折叠（设计稿没有折叠），`is_collapsed` 原样保留。
+- 「清除历史记录…」放在详情的「更多」菜单与侧栏「系统 Hosts」的右键菜单，「清空回收站」放在回收站视图列表栏的工具栏与侧栏右键菜单；规范没有指定位置。
+- 在「已启用」「远程」视图中新建条目后切到「全部方案」（新条目默认关闭，原视图显示不了它）；文件夹视图中新建的条目进入该文件夹。
+- macOS 26 起的工具栏把并排的按钮放在同一块玻璃上并画成普通按钮，「恢复」的 accent 填充由按钮自身绘制；macOS 13–15 用 `.borderedProminent`。
+- 查找替换保留了「查找」按钮（设计稿底部只有「完成 / 全部替换」），因为「只换样式，功能不变」。「Aa」按下表示区分大小写，对应内核的 `is_ignore_case = false`。
+- 偏好「命令」页的「清除历史记录」改为红字，但没有新增确认（只换样式）。
+- 只在 macOS 27 上实际运行过；macOS 13–15 的工具栏与侧栏外观未实测。
+
 ## 最新验证
 
 `macos/scripts/run-tests.sh` 的最近一次完整运行全部通过，`/etc/hosts` 的托管标记数量前后均为 1：
@@ -143,7 +182,7 @@
 - `crates/swh-core`：278 个用例，包括代理路由（HTTP 与 SOCKS5）、命令历史、数据目录的校验路径，以及 `tests/data_dir_roundtrip.rs`（在隔离的 HOME 中完成复制、重启、重置的完整流程）。
 - `crates/swh-ffi`：5 个用例。
 - `src-tauri --lib`：54 个用例。
-- `swift test`（`macos/SwitchHostsNative`）：64 个用例通过。离屏渲染用例（5 个）在未设置 `SWH_SHOTS_DIR` 时跳过；设置后全部通过，并生成截图。覆盖拖放、折叠、文件夹模式、新建文件夹与组合、组合包含的条目、远程刷新、刷新间隔的文案、历史与命令历史的桥接、核心消息的本地化（含开发者诊断信息的中文条目）、解码（含查找结果的前后文与只读、数据目录恢复的路径）、拖放的 payload 往返。
+- `swift test`（`macos/SwitchHostsNative`）：96 个用例通过（H10 新增 32 个：`LibraryTests` 13、`SidebarModelTests` 10、`AutosaveTests` 5、`DebouncerTests` 4）。离屏渲染用例（5 个）在未设置 `SWH_SHOTS_DIR` 时跳过；设置后全部通过，并生成截图。覆盖拖放、折叠、文件夹模式、新建文件夹与组合、组合包含的条目、远程刷新、刷新间隔的文案、历史与命令历史的桥接、核心消息的本地化（含开发者诊断信息的中文条目）、解码（含查找结果的前后文与只读、数据目录恢复的路径）、拖放的 payload 往返。
 
 真实窗口中的检查（授权后，用真实输入，隔离的 HOME，真实数据未改动）：
 
@@ -178,6 +217,12 @@ macos/scripts/run-tests.sh
 ```
 
 该脚本依次运行 `crates/swh-core`、`crates/swh-ffi`、`src-tauri --lib` 的 `cargo test`，构建 Rust 静态库，运行 `swift test`，并检查 `/etc/hosts` 的托管标记在测试前后没有变化。
+
+本地化是否有遗漏（先运行 `macos/scripts/sync-localizations.py`）：
+
+```bash
+macos/scripts/check-localizations.sh
+```
 
 ## H0 的目标条件（用于 `/goal`）
 

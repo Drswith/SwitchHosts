@@ -5,8 +5,10 @@ The renderer keeps its strings in src/common/i18n/languages/*.ts. The native
 UI uses English text as its key and looks up the matching dictionary entry in
 each language. Strings with no matching entry fall back to English.
 """
+import json
 import pathlib
 import re
+import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 LANG_DIR = ROOT / "src/common/i18n/languages"
@@ -390,7 +392,61 @@ OVERRIDES = {
         "The hosts core is closed.": "hosts 内核已关闭。",
         "Unknown error": "未知错误",
         "The core returned an unexpected response.": "内核返回了意外的响应。",
+        # The 1c window: sidebar views, list rows, detail tags, and autosave.
+        "Library": "资源库",
+        "All Entries": "全部方案",
+        "Enabled": "已启用",
+        "Disabled": "未启用",
+        "Folders": "文件夹",
+        "Search": "搜索",
+        "Clear": "清除",
+        "More": "更多",
+        "Current": "当前",
+        "Snapshot": "快照",
+        "Deleted": "已删除",
+        "Deleted %@": "%@ 删除",
+        "Refreshed %@": "%@刷新",
+        "Restore": "恢复",
+        "Create": "创建",
+        "Delete Permanently…": "彻底删除…",
+        "Delete Snapshot": "删除快照",
+        "Delete Snapshot…": "删除快照…",
+        "Clear History…": "清除历史记录…",
+        "Empty Trash…": "清空回收站…",
+        "No enabled entries": "没有已启用的方案",
+        "No entries here yet": "这里还没有方案",
+        "Match case": "区分大小写",
+        "Quit SwitchHosts": "退出 SwitchHosts",
+        "(%lld read-only)": "（%lld 个只读）",
+        "^[%lld entry](inflect: true)": "%lld 个",
+        "^[%lld entry](inflect: true) · %lld enabled": "%lld 个 · %lld 个已启用",
+        "^[%lld entry](inflect: true) in effect": "%lld 个方案生效",
+        "^[%lld item](inflect: true)": "%lld 项",
+        "^[%lld line](inflect: true)": "%lld 行",
+        "^[%lld match](inflect: true)": "%lld 处",
+        "Contains ^[%lld entry](inflect: true)": "包含 %lld 项",
+        "Folder · ^[%lld item](inflect: true)": "文件夹 · %lld 项",
+        "Current file and ^[%lld snapshot](inflect: true)": "当前内容与 %lld 条历史",
+        "Saved when /etc/hosts was written. Read-only.": "这是写入 /etc/hosts 时保存的快照，只读。",
+        "The edits to this entry could not be saved.": "此条目的修改未能保存。",
+        "A copy of /etc/hosts is saved each time SwitchHosts writes it. The copies are listed under System Hosts.": "每次写入 /etc/hosts 时都会保存一份副本，副本列在「系统 Hosts」下。",
     },
+}
+
+# Names, protocols, paths, and samples that read the same in every language.
+# `--check` does not report them.
+KEEP_AS_IS = {
+    "SwitchHosts",
+    "/etc/hosts",
+    "Cloudflare",
+    "DNSPod",
+    "Google",
+    "HTTP",
+    "HTTPS",
+    "SOCKS5",
+    "English",
+    "简体中文",
+    "https://example.com/backup.json",
 }
 
 ENTRY = re.compile(r"^\s*(\w+):\s*'((?:[^'\\]|\\.)*)',?\s*$", re.M)
@@ -435,5 +491,32 @@ def main() -> None:
         print(f"{lproj}: {len(lines) - 1} strings")
 
 
+def check(build_dir: pathlib.Path) -> int:
+    """Report source strings that have no Chinese text.
+
+    `build_dir` holds the .stringsdata files the Swift compiler writes with
+    -emit-localized-strings (see check-localizations.sh). Returns the number
+    of missing strings.
+    """
+    used = {}
+    for path in build_dir.rglob("*.stringsdata"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        source = pathlib.Path(data["source"]).name
+        for entry in data["tables"].get("Localizable", []):
+            used.setdefault(entry["key"], set()).add(source)
+    strings = (OUT_DIR / "zh-Hans.lproj" / "Localizable.strings").read_text(encoding="utf-8")
+    translated = {
+        match.group(1).replace('\\"', '"').replace("\\\\", "\\")
+        for match in re.finditer(r'^"((?:[^"\\]|\\.)*)" = ', strings, re.M)
+    }
+    missing = sorted(key for key in used if key not in translated and key not in KEEP_AS_IS)
+    for key in missing:
+        print(f"missing zh-Hans: {key!r} ({', '.join(sorted(used[key]))})")
+    print(f"{len(used)} strings in the sources, {len(missing)} without a Chinese text")
+    return len(missing)
+
+
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--check":
+        sys.exit(1 if check(pathlib.Path(sys.argv[2])) else 0)
     main()
