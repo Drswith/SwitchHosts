@@ -68,7 +68,7 @@ final class RenderTests: XCTestCase {
     func testRenderMainWindowWithAFolderSelected() async throws {
         let model = HostsModel()
         await model.start()
-        await model.select("team")
+        await model.showSidebar(.folder("team"))
         try await Task.sleep(nanoseconds: 300_000_000)
         try render(ContentView(model: model), size: NSSize(width: 1100, height: 640), name: "main-folder")
     }

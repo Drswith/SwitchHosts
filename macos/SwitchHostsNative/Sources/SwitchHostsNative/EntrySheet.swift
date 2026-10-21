@@ -89,8 +89,9 @@ enum RefreshInterval {
     }
 }
 
-/// Create or edit an entry, after 5.0.2's edit drawer: the type (fixed once
-/// created), the title, and the fields of that type.
+/// Create or edit an entry, after 5.0.2's edit drawer: the type as four
+/// tiles (fixed once created), then a grouped form with the title and the
+/// fields of that type.
 struct EntrySheet: View {
     let prompt: EntryPrompt
     @ObservedObject var model: HostsModel
@@ -106,38 +107,37 @@ struct EntrySheet: View {
     @State private var folderMode = 0
 
     var body: some View {
-        SheetLayout(
-            symbol: kind.symbolName,
-            title: Text(isNew ? LocalizedStringKey("Add Hosts Entry") : LocalizedStringKey("Edit Hosts")),
+        SheetLayout(title: Text(isNew ? LocalizedStringKey("Add Hosts Entry") : LocalizedStringKey("Edit Hosts")),
             width: 520
         ) {
-            Card {
-                field("Hosts Type") {
-                    Picker("Hosts Type", selection: $kind) {
-                        ForEach(EntryKind.allCases) { kind in
-                            Label(kind.label, systemImage: kind.symbolName).tag(kind)
-                        }
+            HStack(spacing: 8) {
+                ForEach(EntryKind.allCases) { option in
+                    KindTile(kind: option, selected: option == kind) {
+                        kind = option
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .disabled(!isNew)
+                    // The kind is fixed once the entry exists, as in 5.0.2.
+                    .disabled(!isNew && option != kind)
                 }
-                field("Hosts Title") {
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(Text("Hosts Type"))
+            FormGroup {
+                row("Hosts Title") {
                     TextField("Hosts Title", text: $title)
                         .textFieldStyle(.roundedBorder)
                         .labelsHidden()
                         .onSubmit(submit)
                 }
-            }
-            switch kind {
-            case .local:
-                EmptyView()
-            case .remote:
-                Card { remoteFields }
-            case .group:
-                Card { groupFields }
-            case .folder:
-                Card { folderFields }
+                switch kind {
+                case .local:
+                    EmptyView()
+                case .remote:
+                    remoteFields
+                case .group:
+                    groupFields
+                case .folder:
+                    folderFields
+                }
             }
         } footer: {
             if case .edit(let node) = prompt {
@@ -145,12 +145,14 @@ struct EntrySheet: View {
                     dismiss()
                     Task { await model.moveToTrash(node.id) }
                 }
+                .foregroundStyle(.red)
             }
             Spacer()
             Button("Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
-            Button("OK", action: submit)
+            Button(isNew ? LocalizedStringKey("Create") : LocalizedStringKey("Save"), action: submit)
                 .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
                 .disabled(!canSave)
         }
         .onAppear(perform: load)
@@ -158,56 +160,66 @@ struct EntrySheet: View {
 
     // ---- fields by type ------------------------------------------------------
 
-    private var remoteFields: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            field("Source") {
-                Picker("Source", selection: $usesDomains) {
-                    Text("URL").tag(false)
-                    Text("Domains").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+    @ViewBuilder private var remoteFields: some View {
+        Divider()
+        row("Source") {
+            Picker("Source", selection: $usesDomains) {
+                Text("URL").tag(false)
+                Text("Domains").tag(true)
             }
-            if usesDomains {
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+        }
+        Divider()
+        if usesDomains {
+            row("Domains", alignment: .top) {
                 TextEditor(text: $domainText)
                     .font(.system(.body, design: .monospaced))
-                    .frame(height: 110)
+                    .frame(height: 96)
                     .overlay(alignment: .topLeading) {
                         if domainText.isEmpty {
                             Text("One domain per line").foregroundStyle(.secondary).padding(6)
                         }
                     }
-            } else {
+            }
+        } else {
+            row("URL") {
                 TextField("http:// or https:// or file://", text: $address)
                     .textFieldStyle(.roundedBorder)
+                    .labelsHidden()
                     .onSubmit(submit)
             }
-            field("Auto Refresh") {
-                Picker("Auto Refresh", selection: $interval) {
-                    ForEach(intervalOptions, id: \.self) { seconds in
-                        Text(verbatim: RefreshInterval.label(seconds)).tag(seconds)
-                    }
+        }
+        Divider()
+        row("Auto Refresh") {
+            Picker("Auto Refresh", selection: $interval) {
+                ForEach(intervalOptions, id: \.self) { seconds in
+                    Text(verbatim: RefreshInterval.label(seconds)).tag(seconds)
                 }
-                .labelsHidden()
-                .frame(maxWidth: 200)
             }
-            if case .edit(let node) = prompt {
+            .labelsHidden()
+            .fixedSize()
+        }
+        if case .edit(let node) = prompt {
+            Divider()
+            row("Last refresh") {
                 HStack(spacing: 8) {
-                    Text("Last refresh") + Text(verbatim: ": \(model.node(withID: node.id)?.lastRefresh ?? "N/A")")
+                    Text(verbatim: model.node(withID: node.id)?.lastRefresh ?? "N/A")
+                        .foregroundStyle(.secondary)
                     Button("Refresh") {
                         Task { await model.refreshRemote(node.id) }
                     }
                     .buttonStyle(.borderless)
                 }
-                .font(.callout)
-                .foregroundStyle(.secondary)
             }
         }
     }
 
     /// The local and remote entries a group can list, each with a checkbox.
-    private var groupFields: some View {
-        field("Content") {
+    @ViewBuilder private var groupFields: some View {
+        Divider()
+        row("Content", alignment: .top) {
             let candidates = model.allNodes.filter { $0.isLocal || $0.isRemote }
             if candidates.isEmpty {
                 Text("No local or remote entries yet.")
@@ -226,8 +238,9 @@ struct EntrySheet: View {
         }
     }
 
-    private var folderFields: some View {
-        field("Choice Mode") {
+    @ViewBuilder private var folderFields: some View {
+        Divider()
+        row("Choice Mode", alignment: .top) {
             VStack(alignment: .leading, spacing: 6) {
                 Picker("Choice Mode", selection: $folderMode) {
                     Text("Default").tag(0)
@@ -236,19 +249,30 @@ struct EntrySheet: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(maxWidth: 360)
-                Text(FolderPane.effect(of: folderMode))
+                .fixedSize()
+                Text(FolderControls.effect(of: folderMode))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
-    private func field<Content: View>(_ label: LocalizedStringKey, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label).font(.subheadline).foregroundStyle(.secondary)
+    /// One row of the grouped form: the label in a fixed column, then the control.
+    private func row<Content: View>(
+        _ label: LocalizedStringKey,
+        alignment: VerticalAlignment = .center,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(alignment: alignment, spacing: 12) {
+            Text(label)
+                .frame(width: 92, alignment: .leading)
+                .padding(.top, alignment == .top ? 4 : 0)
             content()
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     private func includes(_ id: String) -> Binding<Bool> {
@@ -327,5 +351,54 @@ struct EntrySheet: View {
                 await model.updateEntry(node.id, draft)
             }
         }
+    }
+}
+
+/// One of the four kinds as a tile at the top of the entry sheet. The chosen
+/// one has the soft accent background and an accent ring.
+private struct KindTile: View {
+    let kind: EntryKind
+    let selected: Bool
+    let action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: kind.symbolName)
+                    .font(.system(size: 18))
+                Text(kind.label)
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .foregroundStyle(selected ? Color.accentInk : Color.secondary)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(selected ? Color.accentSoft : Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(selected ? Color.accent : Color.clear, lineWidth: 1.5)
+            )
+            .opacity(isEnabled ? 1 : 0.45)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// Rows of a form on one rounded background, as a grouped form shows them.
+private struct FormGroup<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            content()
+        }
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
     }
 }

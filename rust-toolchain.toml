@@ -1,0 +1,8 @@
+# The Rust toolchain for this repository: the core crates, the FFI the
+# native app links, and the Tauri host that shares them. rustup uses it unless
+# RUSTUP_TOOLCHAIN is set; mise reads it too and sets that variable to match
+# inside this directory, so a global mise pin does not apply here. CI builds
+# with the latest stable as well; the crates need at least 1.90
+# (`rust-version` in their Cargo.toml).
+[toolchain]
+channel = "stable"
