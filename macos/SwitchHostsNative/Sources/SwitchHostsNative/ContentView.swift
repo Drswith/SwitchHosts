@@ -1113,6 +1113,10 @@ private struct ImportSheet: View {
 /// content (the sidebar) runs up under the title bar, as the window has it by
 /// default. The system frame keeps a standard title bar above the content.
 /// Either way the title shows, since it heads the list column.
+///
+/// With "hide at launch" on, the window is also left out of state
+/// restoration, so an app that was killed with it open does not show it again
+/// at the next launch. Its size and place are saved apart from that and kept.
 struct WindowFrameConfigurator: NSViewRepresentable {
     let useSystemFrame: Bool
 
@@ -1139,6 +1143,7 @@ struct WindowFrameConfigurator: NSViewRepresentable {
 
     private func apply(to window: NSWindow?, _ coordinator: Coordinator) {
         guard let window else { return }
+        window.isRestorable = !AppBehavior.hidesAtLaunch
         let original = coordinator.original ?? (window.titlebarAppearsTransparent, window.styleMask.contains(.fullSizeContentView))
         coordinator.original = original
         window.titleVisibility = .visible

@@ -6,6 +6,8 @@ import SwitchHostsCore
 enum AppBehavior {
     /// Whether closing the last window quits the app (preference `quit_on_close`).
     static var quitOnClose = false
+    /// Whether the main window stays closed at launch (preference `hide_at_launch`).
+    @MainActor static var hidesAtLaunch = false
     /// Set at launch before macOS 15 when "hide at launch" is on. Those systems
     /// always open the main window, so it closes itself as soon as it shows.
     @MainActor static var closesMainWindowAtLaunch = false
@@ -42,8 +44,14 @@ struct SwitchHostsNativeApp: App {
     private let hidesAtLaunch: Bool
 
     init() {
+        // AppKit offers password and one-time-code AutoFill in every text field
+        // that takes focus, which starts Safari's AutoFill helper process (about
+        // 12 MB) for the rest of the session. Setting a field's content type
+        // does not stop it. Nothing here signs in, so the heuristics are off.
+        UserDefaults.standard.register(defaults: ["NSAutoFillHeuristicsEnabled": false])
         let model = HostsModel()
         hidesAtLaunch = model.openAtLaunch()
+        AppBehavior.hidesAtLaunch = hidesAtLaunch
         if #unavailable(macOS 15.0) {
             AppBehavior.closesMainWindowAtLaunch = hidesAtLaunch
         }
