@@ -148,6 +148,10 @@
 - [x] 拖拽：全部复用 `drop(_:onto:placement:)` 与「移动到文件夹」。「全部方案」与文件夹视图中，拖到行的上半 / 下半放在目标（在其父级中）之前 / 之后；「已启用」「远程」视图不能排序；拖到侧栏文件夹移入该文件夹，拖到「全部方案」移到顶层（已在该处时不变）；侧栏文件夹之间可排序与嵌套；拖进自己或子孙时悬停不显示落点，落下也会被内核规则拒绝。
 - [x] 其余界面：菜单栏窗口宽 300，头部为图标、名称、「N 个方案生效」与打开主窗口按钮，已启用的条目加粗，底部为菜单样式按钮与版本号；偏好设置四页都是 `Form(.grouped)`，开关为 accent，主题改为分段控件，历史的「记录历史」与「最大记录数」移到「高级」；新建 / 编辑顶部为四个类型方块（编辑时禁用），下面为分组表单，底部「取消 / 创建」；查找替换的「.*」「Aa」在输入框内，结果按条目分组并高亮匹配，只读条目带标记、不可替换，底部「完成 / 查找 / 全部替换（N）」。
 - [x] 本地化：新字符串加入 `sync-localizations.py` 的 `OVERRIDES`。新增 `macos/scripts/check-localizations.sh`：用编译器的 `-emit-localized-strings` 取出源码中的全部键，与生成的中文对比；当前 265 个键，0 个缺失（产品名、协议名、路径与示例地址按原文保留，列在 `KEEP_AS_IS`）。
+- [x] 系统设计（2026-10-21 补）：SwiftPM 经 `swiftc` 链接时给 clang 的是 `--sysroot` 而不是 `-isysroot`，链接器把部署目标 13.0 记成了 SDK 版本（`LC_BUILD_VERSION` 中 `sdk 13.0`，实际编译用的是 27.0 SDK）。macOS 按这个 SDK 版本决定是否使用当前的系统设计，所以应用此前一直以兼容模式运行：菜单栏面板是旧式窗口，里面的开关却是新控件，面板变成直角并在上下多出透明条。`make-app.sh` 现在用 `vtool -set-build-version macos 13.0 <SDK 版本> -replace` 写入实际的 SDK 版本，菜单栏面板与主窗口都使用当前设计（macOS 26 起为大圆角玻璃面板）。随之修正：
+  - 行号栏：macOS 14 起视图默认不裁剪到自身边界，行号栏按脏区域填充背景时会盖住正文与上方的标题，改为只填自身范围并开启 `clipsToBounds`。
+  - 兼容模式下的两处绕行已去掉：侧栏「资源库」标题回到滚动区内（兼容模式下滚动区的绘制与点击位置错开），回收站的「恢复」改回系统的 `.glassProminent`（macOS 26 起）/ `.borderedProminent`。
+  - 侧栏与列表的行加了辅助功能动作，VoiceOver 等可以像点击一样选中（此前只有「按钮」特性，按下没有反应）。
 
 验证（真实窗口，测试副本 `net.oldj.switchhosts.native.check`，隔离的 HOME，写入模式为空，真实数据与 `/etc/hosts` 未改动）：
 
@@ -157,20 +161,19 @@
 - 计数随树实时变化（移动、恢复、移入回收站后侧栏数字即时更新）。开关会写入 `/etc/hosts`，所以开关后的计数与「已启用」列表由模型测试覆盖（`SidebarModelTests.testCountsAndTheActiveListFollowTheTree`：模拟开关提交后的 `manifest.json` 并 `reload`）。
 - ⌘ 点击多选、侧栏点击、↑↓ 切换均正常。
 
-截图：`macos/build/screenshots-1c/`（本地生成，不提交：「当前」视图显示的是本机的 `/etc/hosts`）。主窗口按 浅色 / 深色 × 英文 / 中文 各 8 张：`all`、`active`、`remote`、`folder`、`system-current`、`system-snapshot`、`trash`、`empty`（空文件夹），文件名为 `<light|dark>-<en|zh-Hans>-<视图>.png`；另有 `light-zh-Hans-` 的 `menubar`、`preferences-general`、`preferences-advanced`、`entry-sheet`、`find`，以及 `dark-en-` 的 `entry-sheet`、`find`。
+截图：`macos/build/screenshots-1c/`（本地生成，不提交：「当前」视图显示的是本机的 `/etc/hosts`；2026-10-21 在修正 SDK 版本后重拍）。主窗口按 浅色 / 深色 × 英文 / 中文 各 8 张：`all`、`active`、`remote`、`folder`、`system-current`、`system-snapshot`、`trash`、`empty`（空文件夹），文件名为 `<light|dark>-<en|zh-Hans>-<视图>.png`；另有 `light-zh-Hans-menubar.png` 与 `dark-zh-Hans-menubar.png`。偏好设置、新建条目与查找替换没有重拍。
 
 与规范不一致的地方及原因：
 
 - 列表行的开关是 `Toggle` 加自定义的 `BrandSwitchStyle`（辅助功能仍是开关），不是系统的 `.switch`：系统开关不能设置关闭态颜色，也不能做出选中行上的「白色轨道 + accent 滑块」。文件夹开关与之一致；菜单栏窗口与偏好设置用系统 `.switch` 加 accent。
 - 侧栏与列表的行是自绘的（`ScrollView` 加自定义行），不是 `List` 的系统选中样式：系统 List 的选中色跟随系统强调色，做不出 accentSoft 底或实心 accent 行。键盘的 ↑↓、Delete 与 ⌘ / ⇧ 多选已补上；macOS 13 上列表获得焦点时会显示焦点环（14 起已隐藏）。
-- 侧栏的「资源库」标题固定在滚动区之外：在 macOS 26 / 27 上，贴着工具栏的滚动视图绘制位置与点击位置相差一个工具栏高度（实测点击落到下一行）。
 - 「使用系统窗口边框」关闭时不再隐藏标题文字，因为列表栏的标题与副标题就是窗口标题；该偏好仍决定内容是否延伸到标题栏下。
 - 历史快照的副标题是「N 行 · 大小」，不是设计稿的「应用 basic, shared」：Swift 侧的 `ApplyRecord` 没有对应字段，按约束不改 `SwitchHostsCore` 接口。「当前」的副标题是 `/etc/hosts · 追加 / 覆盖`（写入模式，未设置时只显示路径）。
 - 启动时恢复上次的侧栏视图（规范要求存在 UserDefaults），只有首次启动或上次在「系统 Hosts」时选中「当前」。
 - 侧栏文件夹不能折叠（设计稿没有折叠），`is_collapsed` 原样保留。
 - 「清除历史记录…」放在详情的「更多」菜单与侧栏「系统 Hosts」的右键菜单，「清空回收站」放在回收站视图列表栏的工具栏与侧栏右键菜单；规范没有指定位置。
 - 在「已启用」「远程」视图中新建条目后切到「全部方案」（新条目默认关闭，原视图显示不了它）；文件夹视图中新建的条目进入该文件夹。
-- macOS 26 起的工具栏把并排的按钮放在同一块玻璃上并画成普通按钮，「恢复」的 accent 填充由按钮自身绘制；macOS 13–15 用 `.borderedProminent`。
+- macOS 26 起，回收站的「恢复」单独放在一块玻璃上（`sharedBackgroundVisibility(.hidden)`），否则会与「彻底删除」共用一块、显示为普通按钮。
 - 查找替换保留了「查找」按钮（设计稿底部只有「完成 / 全部替换」），因为「只换样式，功能不变」。「Aa」按下表示区分大小写，对应内核的 `is_ignore_case = false`。
 - 偏好「命令」页的「清除历史记录」改为红字，但没有新增确认（只换样式）。
 - 只在 macOS 27 上实际运行过；macOS 13–15 的工具栏与侧栏外观未实测。

@@ -108,13 +108,9 @@ private struct SidebarColumn: View {
     var body: some View {
         let counts = model.counts
         VStack(spacing: 0) {
-        // A scroll view at the very top of the sidebar is drawn one toolbar
-        // height lower than it takes clicks, so the first heading stays above it.
-        SidebarSectionTitle(title: "Library")
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
+                SidebarSectionTitle(title: "Library")
                 SidebarRow(model: model, item: .system, symbol: "desktopcomputer", title: Text("System Hosts"))
                 SidebarRow(model: model, item: .all, symbol: "square.stack.3d.up", title: Text("All Entries"), count: counts.all)
                 SidebarRow(model: model, item: .active, symbol: "switch.2", title: Text("Enabled"), count: counts.active)
@@ -212,6 +208,8 @@ private struct SidebarRow: View {
         .contextMenu { menu }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        // VoiceOver and other assistive tools open the view the way a click does.
+        .accessibilityAction { Task { await model.showSidebar(item) } }
     }
 
     @ViewBuilder private var menu: some View {
@@ -573,6 +571,7 @@ private struct EntryRow: View {
         .contextMenu { EntryActions(model: model, node: node) }
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityAction { model.clickRow(node.id) }
     }
 
     /// "[Folder · ]Local · 4 lines", "Remote · 15 minutes ago", "Group · Contains 2 entries".
@@ -635,6 +634,8 @@ private struct PlainRow: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        // VoiceOver and other assistive tools select the row the way a click does.
+        .accessibilityAction { model.clickRow(id) }
     }
 }
 
@@ -795,7 +796,10 @@ private struct DetailColumn: View {
                     Tag(Text(verbatim: Format.linesAndSize(record.content)), style: .bare)
                 } strip: {
                     SourceStrip(symbol: "clock.arrow.circlepath") {
+                        // A sentence, not a path: it may wrap rather than be cut short.
                         Text("Saved when /etc/hosts was written. Read-only.")
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                     } trailing: {
                         Button("Delete Snapshot…") { Task { await model.deleteSnapshot(record) } }
                             .fontWeight(.semibold)
@@ -1004,23 +1008,16 @@ private struct DetailToolbar: ToolbarContent {
                 }
                 .help("Delete Permanently…")
             }
-            // The main action, filled with the accent. The macOS 26 toolbar
-            // draws its buttons plain on a shared glass, so the fill is drawn
-            // here; earlier systems take the prominent style.
+            // The main action, filled with the accent. On macOS 26 it sits on
+            // its own glass; on the glass the toolbar's buttons share it would
+            // be drawn as a plain button.
             if #available(macOS 26.0, *) {
                 ToolbarItem {
-                    Button {
+                    Button("Restore") {
                         Task { await model.restore(item) }
-                    } label: {
-                        Text("Restore")
-                            .fontWeight(.medium)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 6)
-                            .background(Capsule().fill(Color.accent))
-                            .contentShape(Capsule())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.glassProminent)
+                    .tint(.accent)
                     .help("Restore")
                 }
                 .sharedBackgroundVisibility(.hidden)

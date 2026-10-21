@@ -225,6 +225,11 @@ final class LineNumberRuler: NSRulerView {
         super.init(scrollView: scrollView, orientation: .verticalRuler)
         clientView = textView
         ruleThickness = 56
+        // Views stopped clipping to their bounds in macOS 14; without this the
+        // gutter's background would paint over the text and the views above it.
+        if #available(macOS 14.0, *) {
+            clipsToBounds = true
+        }
         NotificationCenter.default.addObserver(
             self, selector: #selector(redraw), name: NSText.didChangeNotification, object: textView
         )
@@ -256,8 +261,9 @@ final class LineNumberRuler: NSRulerView {
 
     override func drawHashMarksAndLabels(in rect: NSRect) {
         // The gutter shares the editor's background; no line separates them.
+        // The dirty rect can reach past the gutter, so only the gutter is filled.
         (editor?.backgroundColor ?? .textBackgroundColor).setFill()
-        rect.fill()
+        rect.intersection(bounds).fill()
         guard let editor, let layoutManager = editor.layoutManager, let container = editor.textContainer else { return }
         let text = editor.string as NSString
         let attributes: [NSAttributedString.Key: Any] = [.font: numberFont, .foregroundColor: Brand.gutter]
