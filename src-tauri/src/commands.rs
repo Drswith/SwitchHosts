@@ -7,7 +7,7 @@
 //! Convention: every command accepts `args: Vec<serde_json::Value>` to
 //! match the positional-argument marshalling the front-end adapter uses
 //! (`src/renderer/core/agent.ts` sends `invoke(cmd, { args: params })`).
-//! Commands also take a `State<'_, Arc<AppState>>` when they need shared
+//! Commands also take a `State<'_, AppState>` when they need shared
 //! storage access.
 
 use std::path::PathBuf;
@@ -21,33 +21,50 @@ use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_dialog::DialogExt;
 
 use crate::app_menu;
-use crate::events::TauriEvents;
-use crate::find;
+use crate::find::{self, FindHistoryEntry, FindOptions};
 use crate::hosts_apply::{self, HostsApplyError};
 use crate::http;
 use crate::http_api;
 use crate::import_export;
 use crate::lifecycle::{self, MAIN_WINDOW_LABEL};
+use crate::refresh;
 use crate::storage::{
-    data_dir_pointer, fs_copy,
+    data_dir_pointer, entries, fs_copy,
+    manifest::{self, Manifest},
     paths,
-    AppConfig, AppState, StorageError,
+    transaction::{self, Target},
+    AppConfig, AppState, StorageError, Trashcan,
 };
 use crate::tray;
 
-// Shared command logic and its helpers live in `swh_core::api`; the Tauri
-// commands below are thin wrappers over it.
-use swh_core::api::{
-    self, arg_str, load_manifest, load_trashcan, Args,
-};
-// The storage tests drive the trashcan write path directly.
-#[cfg(test)]
-use swh_core::api::move_ids_to_trashcan;
-#[cfg(test)]
-use crate::storage::{entries, transaction::{self, Target}};
-// The storage tests build manifests and trashcans directly.
-#[cfg(test)]
-use crate::storage::{manifest::Manifest, Trashcan};
+type Args = Vec<Value>;
+
+// ---- small helpers ---------------------------------------------------------
+
+fn load_manifest(state: &AppState) -> Result<Manifest, StorageError> {
+    Manifest::load(&state.paths)
+}
+
+fn save_manifest(state: &AppState, m: &Manifest) -> Result<(), StorageError> {
+    m.save(&state.paths)
+}
+
+fn load_trashcan(state: &AppState) -> Result<Trashcan, StorageError> {
+    Trashcan::load(&state.paths.trashcan_file)
+}
+
+fn save_trashcan(state: &AppState, t: &Trashcan) -> Result<(), StorageError> {
+    t.save(&state.paths.trashcan_file)
+}
+
+fn arg_str<'a>(args: &'a Args, index: usize, field: &'static str) -> Result<&'a str, StorageError> {
+    args.get(index)
+        .and_then(Value::as_str)
+        .ok_or_else(|| StorageError::InvalidConfigValue {
+            key: field.into(),
+            reason: format!("expected a string at args[{index}]"),
+        })
+}
 
 // ---- startup critical ------------------------------------------------------
 
@@ -59,7 +76,7 @@ pub async fn ping(_args: Args) -> Value {
 #[tauri::command]
 pub async fn get_basic_data<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, StorageError> {
     let (manifest, trashcan) = {
@@ -109,19 +126,28 @@ pub async fn dark_mode_toggle<R: Runtime>(app: AppHandle<R>, args: Args) -> Valu
 // ---- config ----------------------------------------------------------------
 
 #[tauri::command]
-pub async fn config_all(state: State<'_, Arc<AppState>>, _args: Args) -> Result<Value, StorageError> {
-    api::config_all(&state)
+pub async fn config_all(state: State<'_, AppState>, _args: Args) -> Result<Value, StorageError> {
+    let cfg = state.config.lock().expect("config mutex poisoned");
+    Ok(cfg.to_flat_value())
 }
 
 #[tauri::command]
-pub async fn config_get(state: State<'_, Arc<AppState>>, args: Args) -> Result<Value, StorageError> {
-    api::config_get(&state, &args)
+pub async fn config_get(state: State<'_, AppState>, args: Args) -> Result<Value, StorageError> {
+    let key =
+        args.first()
+            .and_then(Value::as_str)
+            .ok_or_else(|| StorageError::InvalidConfigValue {
+                key: "<arg0>".into(),
+                reason: "config_get requires a string key as the first argument".into(),
+            })?;
+    let cfg = state.config.lock().expect("config mutex poisoned");
+    Ok(cfg.get_key(key).unwrap_or(Value::Null))
 }
 
 #[tauri::command]
 pub async fn config_set(
     app: AppHandle<Wry>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, StorageError> {
     state.require_data_dir_usable()?;
@@ -142,7 +168,7 @@ pub async fn config_set(
 #[tauri::command]
 pub async fn config_update(
     app: AppHandle<Wry>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, StorageError> {
     state.require_data_dir_usable()?;
@@ -167,7 +193,7 @@ async fn save_config_patch(app: AppHandle<Wry>, patch: Value) -> Result<Value, S
     // Disk I/O and waiting for an old HTTP listener to close must not block
     // tokio's async workers. The config writer lock serializes the transaction.
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<Arc<AppState>>();
+        let state = app.state::<AppState>();
         let touched = commit_config_patch(&app, state.inner(), &patch)?;
         let touched_refs: Vec<&str> = touched.iter().map(String::as_str).collect();
         apply_side_effects(&app, state.inner(), &touched_refs);
@@ -341,121 +367,323 @@ fn apply_side_effects(app: &AppHandle<Wry>, state: &AppState, touched_keys: &[&s
 // ---- list / tree -----------------------------------------------------------
 
 #[tauri::command]
-pub async fn get_list(state: State<'_, Arc<AppState>>, _args: Args) -> Result<Value, StorageError> {
-    api::get_list(&state)
+pub async fn get_list(state: State<'_, AppState>, _args: Args) -> Result<Value, StorageError> {
+    let _guard = state.lock_store()?;
+    let m = load_manifest(&state)?;
+    Ok(Value::Array(m.root))
 }
 
 #[tauri::command]
 pub async fn get_item_from_list(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, StorageError> {
-    api::get_item_from_list(&state, &args)
+    let _guard = state.lock_store()?;
+    let id = arg_str(&args, 0, "id")?;
+    let m = load_manifest(&state)?;
+    Ok(manifest::find_node(&m.root, id).unwrap_or(Value::Null))
 }
 
 #[tauri::command]
 pub async fn get_content_of_list(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, StorageError> {
-    // The renderer's in-memory list is authoritative for the Apply button.
-    api::get_content_of_list(&state, args)
+    // The renderer hands us its current in-memory list as args[0]; we
+    // intentionally do NOT re-read manifest.json here. The Apply button
+    // is supposed to write whatever the user is looking at, including
+    // edits that haven't yet been persisted via set_list.
+    let list_value = args.into_iter().next().unwrap_or(Value::Null);
+    let list: Vec<Value> = match list_value {
+        Value::Array(arr) => arr,
+        Value::Null => Vec::new(),
+        _ => {
+            return Err(StorageError::InvalidConfigValue {
+                key: "get_content_of_list.args[0]".into(),
+                reason: "expected an array of host nodes".into(),
+            });
+        }
+    };
+
+    let remove_duplicate = {
+        let cfg = state.config.lock().expect("config mutex poisoned");
+        cfg.remove_duplicate_records
+    };
+
+    let _guard = state.lock_store()?;
+    let content = hosts_apply::aggregate_selected_content(&list, &state.paths, remove_duplicate)?;
+    Ok(json!(content))
 }
 
 #[tauri::command]
-pub async fn set_list(state: State<'_, Arc<AppState>>, args: Args) -> Result<Value, StorageError> {
-    api::set_list(&state, args)
+pub async fn set_list(state: State<'_, AppState>, args: Args) -> Result<Value, StorageError> {
+    set_list_inner(&state, args)
 }
 
-/// Storage tests call the saved-list path directly, without the command wrapper.
-#[cfg(test)]
 fn set_list_inner(state: &AppState, args: Args) -> Result<Value, StorageError> {
-    api::set_list(state, args)
+    state.require_data_dir_usable()?;
+    let mut args = args.into_iter();
+    let list = args.next().unwrap_or(Value::Null);
+    let expected = args.next();
+    let root = match list {
+        Value::Array(arr) => arr,
+        Value::Null => Vec::new(),
+        _ => {
+            return Err(StorageError::InvalidConfigValue {
+                key: "set_list.args[0]".into(),
+                reason: "expected an array of host nodes".into(),
+            });
+        }
+    };
+    let _guard = state.lock_store()?;
+    let mut m = load_manifest(&state)?;
+    if let Some(expected) = expected {
+        let expected = expected
+            .as_array()
+            .ok_or_else(|| StorageError::InvalidConfigValue {
+                key: "set_list.args[1]".into(),
+                reason: "expected the previously read array of host nodes".into(),
+            })?;
+        // Compare persisted fields, including collapse state, in canonical form.
+        // Renderer defaults (e.g. an omitted `type`) must not cause conflicts.
+        if crate::storage::tree_format::legacy_root_to_v5(expected)
+            != crate::storage::tree_format::legacy_root_to_v5(&m.root)
+        {
+            return Err(StorageError::Conflict {
+                reason: "The hosts list changed. Reload it and retry your edit.".into(),
+            });
+        }
+    }
+    // Reapplying the already saved configuration only needs the CAS check.
+    // Do not make recovery depend on rewriting unchanged metadata on a full
+    // or read-only disk. Compare canonical fields, including collapse state.
+    if crate::storage::tree_format::legacy_root_to_v5(&root)
+        == crate::storage::tree_format::legacy_root_to_v5(&m.root)
+    {
+        return Ok(Value::Null);
+    }
+    m.root = root;
+    transaction::run(&state.paths, vec![Target::State, Target::Manifest], || {
+        save_manifest(state, &m)
+    })?;
+    Ok(Value::Null)
 }
 
 #[tauri::command]
 pub async fn move_to_trashcan(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, StorageError> {
-    api::move_to_trashcan(&state, &args)
+    state.require_data_dir_usable()?;
+    let id = arg_str(&args, 0, "id")?.to_string();
+    move_ids_to_trashcan(&state, &[id])?;
+    Ok(Value::Null)
 }
 
 #[tauri::command]
 pub async fn move_many_to_trashcan(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, StorageError> {
-    api::move_many_to_trashcan(&state, args)
+    state.require_data_dir_usable()?;
+    let ids_value = args.into_iter().next().unwrap_or(Value::Null);
+    let ids: Vec<String> = match ids_value {
+        Value::Array(arr) => arr
+            .into_iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+        _ => {
+            return Err(StorageError::InvalidConfigValue {
+                key: "move_many_to_trashcan.args[0]".into(),
+                reason: "expected an array of ids".into(),
+            });
+        }
+    };
+    move_ids_to_trashcan(&state, &ids)?;
+    Ok(Value::Null)
 }
 
+fn move_ids_to_trashcan(state: &AppState, ids: &[String]) -> Result<(), StorageError> {
+    let _guard = state.lock_store()?;
+    let mut m = load_manifest(state)?;
+    let mut t = load_trashcan(state)?;
+    for id in ids {
+        if let Some((node, parent_id)) = manifest::remove_node(&mut m.root, id) {
+            t.add_item(node, parent_id);
+        }
+    }
+    transaction::run(
+        &state.paths,
+        vec![Target::State, Target::Manifest, Target::Trashcan],
+        || {
+            save_manifest(state, &m)?;
+            save_trashcan(state, &t)
+        },
+    )
+}
 
 #[tauri::command]
 pub async fn get_trashcan_list(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, StorageError> {
-    api::get_trashcan_list(&state)
+    let _guard = state.lock_store()?;
+    let t = load_trashcan(&state)?;
+    Ok(Value::Array(t.items))
 }
 
 #[tauri::command]
 pub async fn clear_trashcan(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, StorageError> {
     clear_trashcan_inner(&state, _args)
 }
 
 fn clear_trashcan_inner(state: &AppState, _args: Args) -> Result<Value, StorageError> {
-    api::clear_trashcan(state)
+    state.require_data_dir_usable()?;
+    let _guard = state.lock_store()?;
+    let mut t = load_trashcan(&state)?;
+
+    // Collect all content ids from every trashcan item before clearing,
+    // then delete the corresponding entries/<id>.hosts files.
+    let mut content_ids = Vec::new();
+    for item in &t.items {
+        if let Some(data) = item.get("data") {
+            manifest::collect_content_ids(std::slice::from_ref(data), &mut content_ids);
+        }
+    }
+    let mut targets = vec![Target::Trashcan];
+    targets.extend(content_ids.iter().cloned().map(Target::Entry));
+    t.items.clear();
+    transaction::run(&state.paths, targets, || {
+        save_trashcan(state, &t)?;
+        for cid in &content_ids {
+            entries::delete_entry(&state.paths.entries_dir, cid)?;
+        }
+        Ok(())
+    })?;
+    Ok(Value::Null)
 }
 
 #[tauri::command]
 pub async fn delete_item_from_trashcan(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, StorageError> {
     delete_item_from_trashcan_inner(&state, args)
 }
 
 fn delete_item_from_trashcan_inner(state: &AppState, args: Args) -> Result<Value, StorageError> {
-    api::delete_item_from_trashcan(state, &args)
+    state.require_data_dir_usable()?;
+    let id = arg_str(&args, 0, "id")?.to_string();
+    let _guard = state.lock_store()?;
+    let mut t = load_trashcan(&state)?;
+    let removed_item = t.remove_item(&id);
+    let mut content_ids = Vec::new();
+    if let Some(data) = removed_item.as_ref().and_then(|item| item.get("data")) {
+        manifest::collect_content_ids(std::slice::from_ref(data), &mut content_ids);
+    }
+    let mut targets = vec![Target::Trashcan];
+    targets.extend(content_ids.iter().cloned().map(Target::Entry));
+    transaction::run(&state.paths, targets, || {
+        save_trashcan(state, &t)?;
+        for cid in &content_ids {
+            entries::delete_entry(&state.paths.entries_dir, cid)?;
+        }
+        Ok(())
+    })?;
+
+    Ok(json!(removed_item.is_some()))
 }
 
 #[tauri::command]
 pub async fn restore_item_from_trashcan(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, StorageError> {
     restore_item_from_trashcan_inner(&state, args)
 }
 
 fn restore_item_from_trashcan_inner(state: &AppState, args: Args) -> Result<Value, StorageError> {
-    api::restore_item_from_trashcan(state, &args)
+    state.require_data_dir_usable()?;
+    let id = arg_str(&args, 0, "id")?.to_string();
+    let _guard = state.lock_store()?;
+    let mut t = load_trashcan(&state)?;
+    let item = match t.remove_item(&id) {
+        Some(item) => item,
+        None => return Ok(json!(false)),
+    };
+
+    let parent_id = item
+        .get("parent_id")
+        .and_then(Value::as_str)
+        .map(String::from);
+    let node = item.get("data").cloned().unwrap_or(Value::Null);
+    if node.is_null() {
+        // Trashcan entry was malformed — save the (now-shorter)
+        // trashcan and report failure so the UI shows an error.
+        save_trashcan(&state, &t)?;
+        return Ok(json!(false));
+    }
+
+    let mut m = load_manifest(&state)?;
+    manifest::insert_node(&mut m.root, node, parent_id.as_deref());
+    transaction::run(
+        &state.paths,
+        vec![Target::State, Target::Manifest, Target::Trashcan],
+        || {
+            save_manifest(state, &m)?;
+            save_trashcan(state, &t)
+        },
+    )?;
+    Ok(json!(true))
 }
 
 // ---- hosts content ---------------------------------------------------------
 
 #[tauri::command]
 pub async fn get_hosts_content(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, StorageError> {
-    api::get_hosts_content(&state, &args)
+    let _guard = state.lock_store()?;
+    let id = arg_str(&args, 0, "id")?;
+    let content = entries::read_entry(&state.paths.entries_dir, id)?;
+    Ok(json!(content))
 }
 
 #[tauri::command]
 pub async fn set_hosts_content(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, StorageError> {
-    api::set_hosts_content(&state, &args)
+    state.require_data_dir_usable()?;
+    let _guard = state.lock_store()?;
+    let id = arg_str(&args, 0, "id")?.to_string();
+    let content = args
+        .get(1)
+        .and_then(Value::as_str)
+        .ok_or_else(|| StorageError::InvalidConfigValue {
+            key: "set_hosts_content.args[1]".into(),
+            reason: "expected a string content at args[1]".into(),
+        })?
+        .to_string();
+    entries::write_entry(&state.paths.entries_dir, &id, &content)?;
+    Ok(Value::Null)
 }
 
 #[tauri::command]
 pub async fn get_system_hosts(_args: Args) -> Result<Value, StorageError> {
-    api::get_system_hosts()
+    let path = system_hosts_path()?;
+    hosts_apply::write::read_system_hosts(&path)
+        .map(|s| json!(s))
+        .map_err(|e| StorageError::Io {
+            path: path.display().to_string(),
+            reason: e.to_string(),
+        })
 }
+
 #[tauri::command]
 pub async fn get_path_of_system_hosts(_args: Args) -> Result<Value, StorageError> {
     Ok(json!(system_hosts_path()?.display().to_string()))
@@ -473,7 +701,7 @@ fn system_hosts_path() -> Result<PathBuf, StorageError> {
 #[tauri::command]
 pub async fn apply_hosts_selection<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, String> {
     state.require_data_dir_usable().map_err(|e| e.to_string())?;
@@ -533,7 +761,7 @@ fn read_application_recovery<R: Runtime>(
 #[tauri::command]
 pub async fn get_application_recovery<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, String> {
     Ok(json!(read_application_recovery(&app, &state)))
@@ -544,7 +772,7 @@ pub async fn get_application_recovery<R: Runtime>(
 #[tauri::command]
 pub async fn request_hosts_recovery<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<(), String> {
     state.require_data_dir_usable().map_err(|e| e.to_string())?;
@@ -561,7 +789,7 @@ pub async fn request_hosts_recovery<R: Runtime>(
 
 #[tauri::command]
 pub async fn take_hosts_recovery_request(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<bool, String> {
     state.require_data_dir_usable().map_err(|e| e.to_string())?;
@@ -573,7 +801,7 @@ pub async fn take_hosts_recovery_request(
 #[tauri::command]
 pub async fn finish_hosts_application<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, String> {
     let expected = arg_str(&args, 0, "expected").map_err(|e| e.to_string())?;
@@ -588,7 +816,7 @@ pub async fn finish_hosts_application<R: Runtime>(
 #[tauri::command]
 pub async fn restore_system_hosts<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, String> {
     let previous = arg_str(&args, 0, "previous")
@@ -666,10 +894,89 @@ pub(crate) async fn apply_aggregated_content<R: Runtime>(
     state: &AppState,
     content: &str,
 ) -> Result<hosts_apply::write::ApplyOutcome, ApplyPipelineError> {
-    // The pipeline lives in `swh_core::apply`. Only event routing is Tauri-specific.
-    swh_core::apply::apply_aggregated_content(state, &TauriEvents::new(app), content)
+    let (write_mode, cmd_after_apply) = {
+        let cfg = state.config.lock().expect("config mutex poisoned");
+        (cfg.write_mode.clone(), cfg.cmd_after_hosts_apply.clone())
+    };
+
+    // The privileged write is potentially long-running (waits for the
+    // user at the OS auth prompt) and *must not* hold the store_lock —
+    // see implementation-notes A5. We do all the work outside the lock
+    // and only retake it for the history journal write below.
+    // Off the async workers: the privileged write blocks on an OS auth
+    // prompt for as long as the user takes, and on macOS it also holds a
+    // std mutex while doing so. Awaiting that inline would pin a worker
+    // of the runtime shared by the HTTP server and every async command.
+    let write_result = {
+        let content = content.to_string();
+        let write_mode = write_mode.clone();
+        let backup_dir = state.paths.histories_dir.join("hosts-encoding-backups");
+        tauri::async_runtime::spawn_blocking(move || {
+            hosts_apply::apply_to_system_hosts(&content, &write_mode, &backup_dir)
+        })
         .await
-        .map_err(ApplyPipelineError::Apply)
+    };
+    let outcome = match write_result {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => {
+            if !matches!(e, HostsApplyError::Cancelled) {
+                log::warn!("apply failed: {e}");
+            }
+            return Err(ApplyPipelineError::Apply(e));
+        }
+        Err(e) => {
+            log::warn!("apply task failed to run: {e}");
+            return Err(ApplyPipelineError::Apply(HostsApplyError::Io {
+                message: format!("apply task failed to run: {e}"),
+            }));
+        }
+    };
+
+    if !outcome.unchanged {
+        if let Err(e) = hosts_apply::history::record_change(
+            state,
+            &outcome.previous_content,
+            &outcome.new_content,
+        ) {
+            log::warn!("failed to persist system hosts history: {e}");
+            let _ = app.emit("apply_history_error", json!({ "_args": [e.to_string()] }));
+        }
+    }
+
+    // Notify any listening windows that the system file has changed.
+    // Editor.HostsEditor refreshes the system view; tray refreshes its
+    // selection display. Wrapped in the standard `_args` envelope.
+    let _ = app.emit("system_hosts_updated", json!({ "_args": [] }));
+
+    // Push the freshest tray title to the menubar without waiting on
+    // the renderer to call `update_tray_title` — the user expects to
+    // see the title flip immediately after an apply.
+    if let Err(e) = tray::refresh_title(app, state) {
+        log::warn!("failed to refresh tray title: {e}");
+    }
+
+    // Run `cmd_after_hosts_apply` (if configured) as the current user
+    // — never elevated. We deliberately await it inside this command
+    // so the renderer's existing `await actions.setSystemHosts(...)`
+    // call site can show "running" state without changes; the 30s
+    // timeout in the runner caps the wait. The result is appended to
+    // its own journal and broadcast as `cmd_run_result`.
+    if let Some(result) = hosts_apply::cmd_runner::run(&cmd_after_apply).await {
+        let cmd_history_path = state.paths.histories_dir.join("cmd-after-apply.json");
+        if let Err(e) = hosts_apply::cmd_runner::insert(&cmd_history_path, result.clone()) {
+            log::warn!("failed to persist cmd-after-apply history: {e}");
+        }
+        match serde_json::to_value(&result) {
+            Ok(payload) => {
+                let _ = app.emit("cmd_run_result", json!({ "_args": [payload] }));
+            }
+            Err(e) => {
+                log::warn!("failed to serialise cmd-after-apply result: {e}");
+            }
+        }
+    }
+
+    Ok(outcome)
 }
 
 /// Failure modes of [`apply_aggregated_content`]. Currently only wraps
@@ -687,22 +994,42 @@ pub(crate) enum ApplyPipelineError {
 
 #[tauri::command]
 pub async fn helper_status() -> Result<Value, String> {
-    Ok(api::helper_status())
+    Ok(json!({ "status": hosts_apply::helper_admin::status().as_code() }))
 }
 
 #[tauri::command]
 pub async fn helper_install() -> Result<Value, String> {
-    Ok(api::helper_install())
+    match hosts_apply::helper_admin::register() {
+        Ok(status) => Ok(json!({ "success": true, "status": status.as_code() })),
+        Err(e) => Ok(json!({
+            "success": false,
+            "status": hosts_apply::helper_admin::status().as_code(),
+            "message": e.to_string(),
+        })),
+    }
 }
 
 #[tauri::command]
 pub async fn helper_repair() -> Result<Value, String> {
-    Ok(api::helper_repair())
+    match hosts_apply::helper_admin::repair() {
+        Ok(status) => Ok(json!({ "success": true, "status": status.as_code() })),
+        Err(e) => Ok(json!({
+            "success": false,
+            "status": hosts_apply::helper_admin::status().as_code(),
+            "message": e.to_string(),
+        })),
+    }
 }
 
 #[tauri::command]
 pub async fn helper_uninstall() -> Result<Value, String> {
-    Ok(api::helper_uninstall())
+    match hosts_apply::helper_admin::unregister() {
+        Ok(()) => Ok(json!({
+            "success": true,
+            "status": hosts_apply::helper_admin::status().as_code(),
+        })),
+        Err(e) => Ok(json!({ "success": false, "message": e.to_string() })),
+    }
 }
 
 #[tauri::command]
@@ -722,56 +1049,137 @@ pub async fn helper_open_login_items() -> Value {
 #[tauri::command]
 pub async fn refresh_remote_hosts<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, String> {
-    api::refresh_remote_hosts(&state, &TauriEvents::new(&app), &args).await
+    state.require_data_dir_usable().map_err(|e| e.to_string())?;
+    let id = args
+        .first()
+        .and_then(Value::as_str)
+        .ok_or_else(|| "refresh_remote_hosts: args[0] must be a string".to_string())?;
+    match refresh::refresh_one(&app, state.inner(), id).await {
+        Ok(outcome) => Ok(outcome.into_renderer_value()),
+        Err(e) => Ok(e.into_renderer_value()),
+    }
 }
 
 #[tauri::command]
 pub async fn refresh_all_remote_hosts<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, String> {
-    api::refresh_all_remote_hosts(&state, &TauriEvents::new(&app)).await
+    state.require_data_dir_usable().map_err(|e| e.to_string())?;
+    let results = refresh::refresh_all(&app, state.inner()).await;
+    let payload: Vec<Value> = results
+        .into_iter()
+        .map(|(id, outcome)| match outcome {
+            Ok(outcome) => {
+                let mut value = outcome.into_renderer_value();
+                value["id"] = json!(id);
+                value
+            }
+            Err(e) => {
+                let mut v = e.into_renderer_value();
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("id".to_string(), json!(id));
+                }
+                v
+            }
+        })
+        .collect();
+    Ok(Value::Array(payload))
 }
 
 #[tauri::command]
-pub async fn get_apply_history(state: State<'_, Arc<AppState>>, _args: Args) -> Result<Value, StorageError> {
-    api::get_apply_history(&state)
+pub async fn get_apply_history(
+    state: State<'_, AppState>,
+    _args: Args,
+) -> Result<Value, StorageError> {
+    let _guard = state.lock_store()?;
+    let path = state.paths.histories_dir.join("system-hosts.json");
+    let items = hosts_apply::history::load(&path)?;
+    let value = serde_json::to_value(items)
+        .map_err(|e| StorageError::serialize(path.display().to_string(), e))?;
+    Ok(value)
 }
 
 #[tauri::command]
-pub async fn delete_apply_history_item(state: State<'_, Arc<AppState>>, args: Args) -> Result<Value, StorageError> {
-    api::delete_apply_history_item(&state, &args)
+pub async fn delete_apply_history_item(
+    state: State<'_, AppState>,
+    args: Args,
+) -> Result<Value, StorageError> {
+    state.require_data_dir_usable()?;
+    let id = arg_str(&args, 0, "id")?;
+    let _guard = state.lock_store()?;
+    let path = state.paths.histories_dir.join("system-hosts.json");
+    let removed = hosts_apply::history::delete_by_id(&path, id)?;
+    Ok(json!(removed))
 }
 
 #[tauri::command]
-pub async fn clear_apply_history(state: State<'_, Arc<AppState>>, _args: Args) -> Result<(), StorageError> {
-    api::clear_apply_history(&state).map(|_| ())
+pub async fn clear_apply_history(
+    state: State<'_, AppState>,
+    _args: Args,
+) -> Result<(), StorageError> {
+    state.require_data_dir_usable()?;
+    let _guard = state.lock_store()?;
+    hosts_apply::history::save(&state.paths.histories_dir.join("system-hosts.json"), &[])
 }
 
 #[tauri::command]
-pub async fn update_apply_history_limit(state: State<'_, Arc<AppState>>, args: Args) -> Result<Value, StorageError> {
-    api::update_apply_history_limit(&state, &args)
+pub async fn update_apply_history_limit(
+    state: State<'_, AppState>,
+    args: Args,
+) -> Result<hosts_apply::history::LimitResult, StorageError> {
+    #[derive(serde::Deserialize)]
+    struct Request {
+        limit: u32,
+        confirmation: Option<hosts_apply::history::LimitConfirmation>,
+    }
+    let request: Request = serde_json::from_value(args.first().cloned().unwrap_or(Value::Null))
+        .map_err(|e| StorageError::InvalidConfigValue {
+            key: "history_limit".into(),
+            reason: e.to_string(),
+        })?;
+    hosts_apply::history::update_limit(state.inner(), request.limit, request.confirmation)
 }
 
 // ---- cmd_after_hosts_apply history -----------------------------------------
 
 #[tauri::command]
-pub async fn cmd_get_history_list(state: State<'_, Arc<AppState>>, _args: Args) -> Result<Value, StorageError> {
-    api::cmd_get_history_list(&state)
+pub async fn cmd_get_history_list(
+    state: State<'_, AppState>,
+    _args: Args,
+) -> Result<Value, StorageError> {
+    let path = state.paths.histories_dir.join("cmd-after-apply.json");
+    let items = hosts_apply::cmd_runner::load(&path)?;
+    let value = serde_json::to_value(items)
+        .map_err(|e| StorageError::serialize(path.display().to_string(), e))?;
+    Ok(value)
 }
 
 #[tauri::command]
-pub async fn cmd_delete_history_item(state: State<'_, Arc<AppState>>, args: Args) -> Result<Value, StorageError> {
-    api::cmd_delete_history_item(&state, &args)
+pub async fn cmd_delete_history_item(
+    state: State<'_, AppState>,
+    args: Args,
+) -> Result<Value, StorageError> {
+    state.require_data_dir_usable()?;
+    let id = arg_str(&args, 0, "id")?;
+    let path = state.paths.histories_dir.join("cmd-after-apply.json");
+    let removed = hosts_apply::cmd_runner::delete_by_id(&path, id)?;
+    Ok(json!(removed))
 }
 
 #[tauri::command]
-pub async fn cmd_clear_history(state: State<'_, Arc<AppState>>, _args: Args) -> Result<(), StorageError> {
-    api::cmd_clear_history(&state).map(|_| ())
+pub async fn cmd_clear_history(
+    state: State<'_, AppState>,
+    _args: Args,
+) -> Result<Value, StorageError> {
+    state.require_data_dir_usable()?;
+    let path = state.paths.histories_dir.join("cmd-after-apply.json");
+    hosts_apply::cmd_runner::clear(&path)?;
+    Ok(Value::Null)
 }
 
 // ---- find window -----------------------------------------------------------
@@ -796,28 +1204,83 @@ pub async fn find_set_window_title<R: Runtime + 'static>(
 }
 
 #[tauri::command]
-pub async fn find_by(state: State<'_, Arc<AppState>>, args: Args) -> Result<Value, String> {
-    api::find_by(&state, &args)
+pub async fn find_by(state: State<'_, AppState>, args: Args) -> Result<Value, String> {
+    let keyword = args
+        .first()
+        .and_then(Value::as_str)
+        .ok_or_else(|| "find_by: args[0] must be a string keyword".to_string())?
+        .to_string();
+    let options: FindOptions = match args.get(1) {
+        Some(v) if !v.is_null() => serde_json::from_value(v.clone())
+            .map_err(|e| format!("find_by: invalid options: {e}"))?,
+        _ => FindOptions::default(),
+    };
+    let items = find::find_in_manifest(state.inner(), &keyword, &options)?;
+    serde_json::to_value(items).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn find_replace_one(state: State<'_, Arc<AppState>>, args: Args) -> Result<Value, String> {
-    api::find_replace_one(&state, args)
+pub async fn find_replace_one(state: State<'_, AppState>, args: Args) -> Result<Value, String> {
+    state.require_data_dir_usable().map_err(|e| e.to_string())?;
+    let request = args
+        .into_iter()
+        .next()
+        .ok_or_else(|| "find_replace_one: args[0] must be a request object".to_string())
+        .and_then(|v| {
+            serde_json::from_value(v).map_err(|e| format!("find_replace_one: invalid request: {e}"))
+        })?;
+    let replaced = find::replace_one_in_manifest(state.inner(), request)?;
+    Ok(json!(replaced))
 }
 
 #[tauri::command]
-pub async fn find_replace_all(state: State<'_, Arc<AppState>>, args: Args) -> Result<Value, String> {
-    api::find_replace_all(&state, &args)
+pub async fn find_replace_all(state: State<'_, AppState>, args: Args) -> Result<Value, String> {
+    state.require_data_dir_usable().map_err(|e| e.to_string())?;
+    let keyword = args
+        .first()
+        .and_then(Value::as_str)
+        .ok_or_else(|| "find_replace_all: args[0] must be a string keyword".to_string())?
+        .to_string();
+    let options: FindOptions = match args.get(1) {
+        Some(v) if !v.is_null() => serde_json::from_value(v.clone())
+            .map_err(|e| format!("find_replace_all: invalid options: {e}"))?,
+        _ => FindOptions::default(),
+    };
+    let replace_to = args
+        .get(2)
+        .and_then(Value::as_str)
+        .ok_or_else(|| "find_replace_all: args[2] must be a string replacement".to_string())?
+        .to_string();
+
+    let outcome = find::replace_all_in_manifest(state.inner(), &keyword, &options, &replace_to)?;
+    serde_json::to_value(outcome).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn find_add_history(state: State<'_, Arc<AppState>>, args: Args) -> Result<Value, StorageError> {
-    api::find_add_history(&state, &args)
+pub async fn find_add_history(
+    state: State<'_, AppState>,
+    args: Args,
+) -> Result<Value, StorageError> {
+    state.require_data_dir_usable()?;
+    let entry: FindHistoryEntry = match args.into_iter().next() {
+        Some(v) => serde_json::from_value(v).map_err(|e| StorageError::InvalidConfigValue {
+            key: "find_add_history.args[0]".into(),
+            reason: e.to_string(),
+        })?,
+        None => {
+            return Err(StorageError::InvalidConfigValue {
+                key: "find_add_history.args[0]".into(),
+                reason: "expected a FindHistoryEntry object".into(),
+            });
+        }
+    };
+    let all = find::add_find_history(state.inner(), entry)?;
+    Ok(serde_json::to_value(all).map_err(|e| StorageError::serialize("find.json", e))?)
 }
 
 #[tauri::command]
 pub async fn find_get_history(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, StorageError> {
     let all = find::get_find_history(state.inner())?;
@@ -825,18 +1288,36 @@ pub async fn find_get_history(
 }
 
 #[tauri::command]
-pub async fn find_set_history(state: State<'_, Arc<AppState>>, args: Args) -> Result<Value, StorageError> {
-    api::find_set_history(&state, &args)
+pub async fn find_set_history(
+    state: State<'_, AppState>,
+    args: Args,
+) -> Result<Value, StorageError> {
+    state.require_data_dir_usable()?;
+    let items: Vec<FindHistoryEntry> = match args.into_iter().next() {
+        Some(Value::Array(arr)) => arr
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<FindHistoryEntry>(v).ok())
+            .collect(),
+        _ => Vec::new(),
+    };
+    find::set_find_history(state.inner(), &items)?;
+    Ok(Value::Null)
 }
 
 #[tauri::command]
-pub async fn find_add_replace_history(state: State<'_, Arc<AppState>>, args: Args) -> Result<Value, StorageError> {
-    api::find_add_replace_history(&state, &args)
+pub async fn find_add_replace_history(
+    state: State<'_, AppState>,
+    args: Args,
+) -> Result<Value, StorageError> {
+    state.require_data_dir_usable()?;
+    let value = arg_str(&args, 0, "find_add_replace_history")?.to_string();
+    let all = find::add_replace_history(state.inner(), value)?;
+    Ok(serde_json::to_value(all).map_err(|e| StorageError::serialize("replace.json", e))?)
 }
 
 #[tauri::command]
 pub async fn find_get_replace_history(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, StorageError> {
     let all = find::get_replace_history(state.inner())?;
@@ -844,8 +1325,20 @@ pub async fn find_get_replace_history(
 }
 
 #[tauri::command]
-pub async fn find_set_replace_history(state: State<'_, Arc<AppState>>, args: Args) -> Result<Value, StorageError> {
-    api::find_set_replace_history(&state, &args)
+pub async fn find_set_replace_history(
+    state: State<'_, AppState>,
+    args: Args,
+) -> Result<Value, StorageError> {
+    state.require_data_dir_usable()?;
+    let items: Vec<String> = match args.into_iter().next() {
+        Some(Value::Array(arr)) => arr
+            .into_iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+        _ => Vec::new(),
+    };
+    find::set_replace_history(state.inner(), &items)?;
+    Ok(Value::Null)
 }
 
 // ---- window / misc ---------------------------------------------------------
@@ -853,7 +1346,7 @@ pub async fn find_set_replace_history(state: State<'_, Arc<AppState>>, args: Arg
 #[tauri::command]
 pub async fn hide_main_window<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, String> {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -903,7 +1396,7 @@ pub async fn focus_main_window<R: Runtime>(app: AppHandle<R>, _args: Args) -> Va
 #[tauri::command]
 pub async fn quit_app<R: Runtime>(
     app: AppHandle<R>,
-    _state: State<'_, Arc<AppState>>,
+    _state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, String> {
     lifecycle::quit_app(&app);
@@ -913,7 +1406,7 @@ pub async fn quit_app<R: Runtime>(
 #[tauri::command]
 pub async fn update_tray_title<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, StorageError> {
     tray::refresh_title(&app, &state)?;
@@ -983,11 +1476,12 @@ fn default_export_file_name() -> String {
 #[tauri::command]
 pub async fn export_data<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, String> {
-    // Refuse during recovery: the active root is a fallback default. The core
-    // checks this again; the early return keeps the save dialog from opening.
+    // Refuse during recovery: the active root is a fallback default, so an
+    // export there would silently dump that fallback's data rather than the
+    // user's real (unavailable) data. Block it until the location is resolved.
     state.require_data_dir_usable().map_err(|e| e.to_string())?;
     let picked = app
         .dialog()
@@ -1005,13 +1499,12 @@ pub async fn export_data<R: Runtime>(
         Err(e) => return Err(format!("invalid save path: {e}")),
     };
 
-    match api::export_data(&state, &dest_path) {
-        Ok(path) => Ok(path),
-        Err(e) => {
-            log::warn!("export failed: {e}");
-            Ok(Value::Bool(false))
-        }
+    let _guard = state.lock_store().map_err(|e| e.to_string())?;
+    if let Err(e) = import_export::export_to_file(&dest_path, &state.paths) {
+        log::warn!("export failed: {e}");
+        return Ok(Value::Bool(false));
     }
+    Ok(Value::String(dest_path.display().to_string()))
 }
 
 #[cfg(test)]
@@ -1043,7 +1536,7 @@ mod storage_tests;
 #[tauri::command]
 pub async fn import_data<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     sessions: State<'_, import_export::preview::Sessions>,
     _args: Args,
 ) -> Result<Value, import_export::preview::ImportError> {
@@ -1059,17 +1552,44 @@ pub async fn import_data<R: Runtime>(
     let src_path = src
         .into_path()
         .map_err(|_| import_export::preview::ImportError::Invalid("invalid_data".into()))?;
-    api::import_file(&state, &sessions, &src_path)
+    let bytes = http::read_file_with_limit(&src_path, http::MAX_IMPORT_BACKUP_BYTES)
+        .map_err(|e| import_export::preview::ImportError::Invalid(e.to_string()))?;
+    let draft = import_export::preview::parse(&bytes)?;
+    let name = src_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("import")
+        .to_string();
+    let _guard = state.lock_store()?;
+    Ok(json!(sessions.prepare(draft, name, &state.paths)?))
 }
 
 #[tauri::command]
 pub async fn import_data_from_url(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     sessions: State<'_, import_export::preview::Sessions>,
     args: Args,
 ) -> Result<Value, import_export::preview::ImportError> {
+    state.require_data_dir_usable()?;
     let url = arg_str(&args, 0, "url")?;
-    api::import_url(&state, &sessions, url).await
+    let client = http::build_client(state.inner())
+        .map_err(|e| import_export::preview::ImportError::Invalid(e.to_string()))?;
+    let bytes = fetch_url(&client, url)
+        .await
+        .map_err(import_export::preview::ImportError::Invalid)?;
+    let draft = import_export::preview::parse(&bytes)?;
+    let name = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| {
+            u.path_segments()
+                .and_then(|mut p| p.next_back())
+                .map(str::to_string)
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "import".into());
+    let name = name.strip_suffix(".json").unwrap_or(&name).to_string();
+    let _guard = state.lock_store()?;
+    Ok(json!(sessions.prepare(draft, name, &state.paths)?))
 }
 
 #[tauri::command]
@@ -1077,28 +1597,62 @@ pub async fn discard_import(
     sessions: State<'_, import_export::preview::Sessions>,
     args: Args,
 ) -> Result<(), StorageError> {
-    api::import_discard(&sessions, arg_str(&args, 0, "id")?);
+    sessions.discard(arg_str(&args, 0, "id")?);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn rebase_import(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     sessions: State<'_, import_export::preview::Sessions>,
     args: Args,
 ) -> Result<Value, import_export::preview::ImportError> {
-    api::import_rebase(&state, &sessions, arg_str(&args, 0, "id")?)
+    state.require_data_dir_usable()?;
+    let _guard = state.lock_store()?;
+    Ok(json!(
+        sessions.rebase(arg_str(&args, 0, "id")?, &state.paths)?
+    ))
 }
 
 #[tauri::command]
 pub async fn commit_import<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     sessions: State<'_, import_export::preview::Sessions>,
     args: Args,
 ) -> Result<Value, import_export::preview::ImportError> {
-    let request = args.into_iter().next().unwrap_or(Value::Null);
-    api::import_commit(&state, &TauriEvents::new(&app), &sessions, request)
+    state.require_data_dir_usable()?;
+    let request = serde_json::from_value(args.first().cloned().unwrap_or(Value::Null))
+        .map_err(|_| import_export::preview::ImportError::Invalid("invalid_data".into()))?;
+    let result = {
+        let _guard = state.lock_store()?;
+        if state.application_recovery.is_pending() {
+            return Err(import_export::preview::ImportError::Invalid(
+                "application_recovery".into(),
+            ));
+        }
+        sessions.commit(request, &state.paths)?
+    };
+    let _ = app.emit("reload_list", json!({"_args": []}));
+    let _ = app.emit("tray_list_updated", json!({"_args": []}));
+    // An import is already committed even if refreshing native UI fails.
+    if let Err(error) = tray::refresh_title(&app, &state) {
+        log::warn!("failed to refresh tray title after import: {error}");
+    }
+    Ok(result)
+}
+
+async fn fetch_url(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(http::request_error_message)?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("error_{}", status.as_u16()));
+    }
+    http::response_bytes_with_limit(response, http::MAX_IMPORT_BACKUP_BYTES).await
 }
 
 // ---- updater ---------------------------------------------------------------
@@ -1117,7 +1671,7 @@ pub fn start_auto_update_checker<R: Runtime + 'static>(app: AppHandle<R>) {
 }
 
 async fn run_auto_update_check<R: Runtime>(app: &AppHandle<R>) {
-    let state = app.state::<Arc<AppState>>();
+    let state = app.state::<AppState>();
     // Backstop for the gate in lib.rs setup: while the data directory is
     // unavailable we're on a fallback root, so the config we'd read isn't the
     // user's (and defaults to auto-check on), and emitting `new_version` would
@@ -1168,7 +1722,7 @@ async fn check_update_inner<R: Runtime>(
 #[tauri::command]
 pub async fn check_update<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, String> {
     check_update_inner(&app, state.inner()).await
@@ -1177,7 +1731,7 @@ pub async fn check_update<R: Runtime>(
 #[tauri::command]
 pub async fn download_update<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, String> {
     let _guard = state.update_check_lock.lock().await;
@@ -1233,7 +1787,7 @@ pub async fn download_update<R: Runtime>(
 #[tauri::command]
 pub async fn install_update<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, String> {
     if let Some(window) = app.get_webview_window(lifecycle::MAIN_WINDOW_LABEL) {
@@ -1256,7 +1810,7 @@ fn updater_builder_with_proxy<R: Runtime>(
     let mut builder = app.updater_builder();
     let app_for_before_exit = app.clone();
     builder = builder.on_before_exit(move || {
-        let state = app_for_before_exit.state::<Arc<AppState>>();
+        let state = app_for_before_exit.state::<AppState>();
         if let Some(window) = app_for_before_exit.get_webview_window(lifecycle::MAIN_WINDOW_LABEL) {
             lifecycle::persist_window_geometry(&window, state.inner());
         }
@@ -1346,7 +1900,7 @@ pub fn popup_menu<R: Runtime>(
 // ---- data dir --------------------------------------------------------------
 
 #[tauri::command]
-pub async fn get_data_dir(state: State<'_, Arc<AppState>>, _args: Args) -> Result<Value, StorageError> {
+pub async fn get_data_dir(state: State<'_, AppState>, _args: Args) -> Result<Value, StorageError> {
     Ok(json!(state.paths.root.display().to_string()))
 }
 
@@ -1361,7 +1915,7 @@ pub async fn get_data_dir(state: State<'_, Arc<AppState>>, _args: Args) -> Resul
 /// so the UI can disable a pointless "reset".
 #[tauri::command]
 pub async fn get_data_dir_status(
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, StorageError> {
     let recovery = state.data_dir_recovery.as_ref().map(|r| match r {
@@ -1392,7 +1946,7 @@ pub async fn get_data_dir_status(
 #[tauri::command]
 pub async fn pick_data_dir<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, StorageError> {
     let current_root = state.paths.root.clone();
@@ -1443,7 +1997,7 @@ pub async fn pick_data_dir<R: Runtime>(
 #[tauri::command]
 pub async fn apply_data_dir<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     args: Args,
 ) -> Result<Value, StorageError> {
     let obj = args.first().and_then(Value::as_object).ok_or_else(|| {
@@ -1568,7 +2122,7 @@ pub async fn apply_data_dir<R: Runtime>(
 #[tauri::command]
 pub async fn reset_data_dir<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, Arc<AppState>>,
+    state: State<'_, AppState>,
     _args: Args,
 ) -> Result<Value, StorageError> {
     if !data_dir_pointer::pointer_exists() && state.data_dir_recovery.is_none() {

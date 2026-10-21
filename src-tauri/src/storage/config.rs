@@ -397,17 +397,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_partial_sets_and_clears_the_locale() {
-        let mut cfg = AppConfig::default();
-
-        cfg.apply_partial(&json!({ "locale": "zh_CN" })).unwrap();
-        assert_eq!(cfg.locale.as_deref(), Some("zh_CN"));
-
-        cfg.apply_partial(&json!({ "locale": null })).unwrap();
-        assert_eq!(cfg.locale, None, "null means follow the system language");
-    }
-
-    #[test]
     fn defaults_lightweight_mode_to_false() {
         let cfg = AppConfig::default();
 

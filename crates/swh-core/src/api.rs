@@ -1,8 +1,9 @@
-//! Command surface shared by every host.
+//! Command surface for the native host.
 //!
-//! Each function takes the same positional `args` the renderer sends. The
-//! Tauri commands and the FFI dispatcher are thin wrappers over these, so
-//! the behaviour lives in one place.
+//! Each function takes the same positional `args` the renderer sends and
+//! mirrors the Tauri command of the same name in upstream's
+//! `src-tauri/src/commands.rs` (tracked in `crates/upstream-sync.txt`). The
+//! FFI dispatcher is a thin wrapper over these.
 
 use serde_json::{json, Value};
 

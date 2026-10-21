@@ -20,8 +20,35 @@
 - 最低系统版本 macOS 13（SMAppService 所需）。
 - 树的开关事务已在 Rust 中实现（`toggle`，原先用于 HTTP API），现提升为内核公共函数。
 - 不做轻量模式。它是 Tauri 版为减少 WebView 内存而设计的，原生版没有 WebView，不需要。原生版不实现该设置，也不释放窗口内容；内核中的 `lightweight_mode` 配置键保留，Tauri 版继续使用。
+- fork 不修改上游文件。与 Tauri 无关的模块在 `crates/swh-core` 中原位编译（`#[path]` 指向 `src-tauri/src`）；与 Tauri 耦合的逻辑是 fork 自有副本，来源与同步基线记录在 `crates/upstream-sync.txt`。
+
+## 代码布局与上游同步
+
+- **与上游逐字一致**：`src-tauri/` 与 fork 所基于的上游提交逐字相同（目前是 `46b3bca7`），由 `footprint` 检查保证。Tauri 版使用上游自己的 `commands.rs`、`refresh.rs`、`http_api` 与 `AppState`（不是 `Arc<AppState>`），不依赖 `crates/swh-core`。
+- **原位编译**：`crates/swh-core` 不保存上游模块的副本，用 `#[path]` 直接编译 `src-tauri/src` 中的源文件。`storage`、`hosts_apply`、`helper_proto`、`migration`、`dns`、`hosts_text` 直接挂在 crate 根；`http`、`import_export` 通过带目录 `#[path]` 的内联模块挂载（它们有同名子目录），并在 crate 根重新导出，使上游代码中的 `crate::storage::…` 等路径保持有效。
+  - 上游对这些模块的修复无需移植，原生版直接获得；上游改了签名时，`swh-core` 编译失败，这就是同步信号。
+  - `storage` 与 `hosts_apply` 直接挂在 crate 根，使上游两个按完整路径重跑测试二进制的测试（`storage::transaction::tests::…`、`hosts_apply::history::tests::…`）在 `swh-core` 中同样通过。
+- **fork 自有**：与 Tauri 耦合的逻辑（命令、托管状态、事件）无法原位编译，只能在 `crates/swh-core/src` 中重新实现，不依赖 Tauri。上游改动需要手动移植：
+  - `api.rs`、`apply.rs`（来自 `commands.rs`）、`refresh.rs`、`find.rs`、`events.rs`
+  - `toggle.rs`、`toggle/tests.rs`（来自 `http_api/toggle.rs`）
+  - `http_api/{mod,routes,server}.rs`（来自 `http_api.rs`、`http_api/server.rs`）
+  - `bootstrap.rs`：`AppState::bootstrap_at`，即 `AppState::bootstrap` 的显式数据根版本，作为 fork crate 中的 inherent impl 实现，因此 `storage/mod.rs` 不改动
+  - `extra_tests.rs`：为上游模块补充的测试（`http.rs` 的代理路由、`storage/config.rs` 的语言）
+- 每个 fork 自有文件的上游来源与已同步的上游提交记录在 `crates/upstream-sync.txt`。
+
+同步上游：
+
+1. `git fetch upstream`
+2. 将 `upstream/master` 合并进 fork。用 merge，不 rebase 已发布的历史；`git config rerere.enabled true` 可减少重复冲突。
+3. `crates/upstream-sync.sh check -p`：列出上游来源自基线以来有变化的 fork 文件，有则退出码为 1。
+4. 把列出的改动移植到 fork 副本中。
+5. 每个移植完的文件执行 `crates/upstream-sync.sh bump <fork 路径> [ref]`，记录新基线。
+6. `crates/upstream-sync.sh footprint`：fork 改动了 `macos/`、`crates/`、`docs/native-*.md`、`rust-toolchain.toml`、`.gitignore` 之外的文件则失败。
+7. 运行测试：`macos/scripts/run-tests.sh`。
 
 ## 里程碑
+
+> 注：H0–H6 中描述 Tauri 侧委托内核或复用内核、以及模块「迁入」`crates/swh-core` 的条目，已被「代码布局与上游同步」取代：Tauri 版恢复为与上游一致，与 Tauri 无关的模块在 `crates/swh-core` 中原位编译，不再搬迁。以下条目保留作历史记录。
 
 ### H0 内核拆分与桥接
 
@@ -182,9 +209,9 @@
 
 `macos/scripts/run-tests.sh` 的最近一次完整运行全部通过，`/etc/hosts` 的托管标记数量前后均为 1：
 
-- `crates/swh-core`：278 个用例，包括代理路由（HTTP 与 SOCKS5）、命令历史、数据目录的校验路径，以及 `tests/data_dir_roundtrip.rs`（在隔离的 HOME 中完成复制、重启、重置的完整流程）。
+- `crates/swh-core`：278 个单元用例（其中约 210 个是原位编译的上游模块自带的测试）加 1 个集成用例，包括代理路由（HTTP 与 SOCKS5）、命令历史、数据目录的校验路径，以及 `tests/data_dir_roundtrip.rs`（在隔离的 HOME 中完成复制、重启、重置的完整流程）。
 - `crates/swh-ffi`：5 个用例。
-- `src-tauri --lib`：54 个用例。
+- `src-tauri --lib`：317 个用例（与上游一致的 Tauri 版自带测试）。
 - `swift test`（`macos/SwitchHostsNative`）：96 个用例通过（H10 新增 32 个：`LibraryTests` 13、`SidebarModelTests` 10、`AutosaveTests` 5、`DebouncerTests` 4）。离屏渲染用例（5 个）在未设置 `SWH_SHOTS_DIR` 时跳过；设置后全部通过，并生成截图。覆盖拖放、折叠、文件夹模式、新建文件夹与组合、组合包含的条目、远程刷新、刷新间隔的文案、历史与命令历史的桥接、核心消息的本地化（含开发者诊断信息的中文条目）、解码（含查找结果的前后文与只读、数据目录恢复的路径）、拖放的 payload 往返。
 
 真实窗口中的检查（授权后，用真实输入，隔离的 HOME，真实数据未改动）：
@@ -211,7 +238,7 @@
 
 - 树的开关规则在 Rust（`storage::manifest::set_on_state_of_item`）和 TypeScript（`src/common/hostsFn.ts`）中各有一份。TypeScript 版继续服务 Tauri 渲染层，直到 Tauri 版下线。
 - 数据目录的切换逻辑在核心与 Tauri 中各有一份：Tauri 版保留了窗口几何的持久化与自身的重启流程。
-- Tauri 版的 `src-tauri/src/http_api/` 只是薄宿主，实际逻辑在内核（H2）。
+- Tauri 版的 HTTP API（`src-tauri/src/http_api.rs` 及 `src-tauri/src/http_api/`）与上游一致，不再是薄宿主；原生版的 HTTP API 在 `crates/swh-core/src/http_api/`，是 fork 自有副本（见「代码布局与上游同步」）。
 
 ## 验证命令
 

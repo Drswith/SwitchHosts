@@ -1,19 +1,23 @@
 mod app_menu;
 mod commands;
-mod events;
+pub mod dns;
 mod find;
+// Shared contract between the app and the `swh_helper` privileged
+// daemon bin target — must be `pub` so `src/bin/swh_helper.rs` can use
+// it via `switchhosts_lib::helper_proto`.
+pub mod helper_proto;
+mod hosts_apply;
+mod hosts_text;
+mod http;
 mod http_api;
 mod i18n;
+mod import_export;
 mod lifecycle;
+mod migration;
+mod refresh;
+mod storage;
 mod tray;
 mod window_theme;
-
-// The Tauri-free core lives in the `swh-core` crate. Re-export its modules
-// under the same paths the Tauri glue already uses (`crate::storage::...`).
-// `helper_proto` must stay `pub`: `src/bin/swh_helper.rs` reaches it via
-// `switchhosts_lib::helper_proto`.
-pub use swh_core::{dns, helper_proto};
-use swh_core::{hosts_apply, http, import_export, refresh, storage};
 
 use serde_json::json;
 #[cfg(any(target_os = "windows", test))]
@@ -172,7 +176,7 @@ pub fn run() {
             // fallback default data (Find / New / Preferences / Comment) so
             // they can't bypass the recovery prompt; Quit, About and external
             // links stay available.
-            let in_recovery = app.state::<Arc<AppState>>().data_dir_recovery.is_some();
+            let in_recovery = app.state::<AppState>().data_dir_recovery.is_some();
             match id {
                 #[cfg(target_os = "macos")]
                 app_menu::MENU_ID_HIDE_APP => {
@@ -231,7 +235,7 @@ pub fn run() {
             // Plugins (including single-instance) initialize before setup.
             // Only the owning instance may clean temporary files or recover
             // an undo journal; a second launch must not roll back its work.
-            app.manage(Arc::new(AppState::bootstrap()?));
+            app.manage(AppState::bootstrap()?);
             app.manage(import_export::preview::Sessions::default());
 
             // We build the main window programmatically (rather than
@@ -246,7 +250,7 @@ pub fn run() {
             // path handles the first tray-triggered show identically to
             // the lightweight-mode reopen.
             let app_handle = app.handle().clone();
-            let app_state = app.state::<Arc<AppState>>();
+            let app_state = app.state::<AppState>();
 
             // Run automatic update checks from the backend so they keep
             // working while the main window is hidden to the tray. The
@@ -411,14 +415,7 @@ pub fn run() {
             if app_state.data_dir_recovery.is_none() {
                 // Background scanner for remote-hosts auto refresh.
                 // Wakes every 60s, replaces `src/main/libs/cron.ts`.
-                let scanner_state = app_handle.state::<Arc<AppState>>().inner().clone();
-                let scanner_events = events::TauriEvents::shared(&app_handle);
-                let scanner_stop = Arc::new(AtomicBool::new(false));
-                tauri::async_runtime::spawn(refresh::run_background_scanner(
-                    scanner_state,
-                    scanner_events,
-                    scanner_stop,
-                ));
+                refresh::start_background_scanner(app_handle.clone());
 
                 // Preserve the enabled preference on startup failure; the
                 // preferences pane reads runtime status and lets users fix the
@@ -602,7 +599,7 @@ pub fn run() {
         }
         RunEvent::ExitRequested { api, .. } => {
             lifecycle::persist_on_exit_requested(app_handle);
-            let state = app_handle.state::<Arc<AppState>>();
+            let state = app_handle.state::<AppState>();
             let will_quit = state.is_will_quit.load(Ordering::SeqCst);
             let expecting = lifecycle::take_expecting_lightweight_exit();
             if expecting && !will_quit {

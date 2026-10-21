@@ -1,6 +1,6 @@
 //! Find and replace over hosts content: search, single and bulk replace, and
-//! the find / replace history. No window or host code lives here, so the
-//! Tauri app and the native app share one implementation.
+//! the find / replace history: upstream's `src-tauri/src/find.rs` without its
+//! find window, so no window or host code lives here.
 //!
 //! Search covers every local and remote node. Group and folder nodes are
 //! skipped; they hold references, not content.
