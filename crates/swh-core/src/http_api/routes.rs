@@ -37,8 +37,8 @@ use crate::toggle::{ensure_toggle_allowed, toggle_item, ToggleError};
 
 /// Host hooks the HTTP API needs beyond storage.
 pub trait ApiHost: Send + Sync {
-    /// True while a renderer is alive to run the apply pipeline. The Tauri app
-    /// reports its main window here.
+    /// True while a renderer is alive to run the apply pipeline (upstream's
+    /// Tauri app checks for its main window).
     fn renderer_available(&self) -> bool {
         false
     }

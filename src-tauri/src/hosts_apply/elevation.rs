@@ -31,7 +31,8 @@ use super::helper_admin::HelperStatus;
 /// elevation helper. Shared between [`elevate_copy`] (parent, builds
 /// the argv) and [`crate::maybe_run_as_elevation_helper`] (child,
 /// parses argv).
-pub const ELEVATION_HELPER_ARG: &str = "--swh-elevated-apply-hosts";
+#[cfg(any(target_os = "windows", test))]
+pub(crate) const ELEVATION_HELPER_ARG: &str = "--swh-elevated-apply-hosts";
 
 /// Write `content` to `target` using OS-native elevation. The caller
 /// is responsible for falling back here only after a direct write

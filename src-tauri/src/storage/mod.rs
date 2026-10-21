@@ -84,16 +84,7 @@ impl AppState {
     /// 5. Enforce the saved history limit, skipping maintenance if the
     ///    configuration cannot be read or the data directory is unavailable.
     pub fn bootstrap() -> Result<Self, StorageError> {
-        let (paths, data_dir_recovery) = paths::resolve_root()?;
-        Self::bootstrap_at(paths, data_dir_recovery)
-    }
-
-    /// Same as [`AppState::bootstrap`] but against an explicit root, skipping
-    /// the data-dir pointer lookup. Used by the native FFI and by tests.
-    pub fn bootstrap_at(
-        mut paths: V5Paths,
-        mut data_dir_recovery: Option<paths::DataDirRecovery>,
-    ) -> Result<Self, StorageError> {
+        let (mut paths, mut data_dir_recovery) = paths::resolve_root()?;
 
         // If the resolved root can't host the v5 layout — a file blocking a
         // required directory (e.g. a plain file named `entries`), a read-only

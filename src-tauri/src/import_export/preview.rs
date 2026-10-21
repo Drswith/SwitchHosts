@@ -768,8 +768,8 @@ mod tests;
 
 // Fixtures in history and refresh tests go through the same parse/preview/commit
 // path as the shipped command, including fresh IDs and replacement validation.
-#[cfg(any(test, feature = "test-support"))]
-pub fn replace_for_test(data: &Value, paths: &V5Paths) -> Vec<Value> {
+#[cfg(test)]
+pub(crate) fn replace_for_test(data: &Value, paths: &V5Paths) -> Vec<Value> {
     let sessions = Sessions::default();
     let draft = parse(&serde_json::to_vec(data).unwrap()).unwrap();
     let preview = sessions.prepare(draft, "test".into(), paths).unwrap();

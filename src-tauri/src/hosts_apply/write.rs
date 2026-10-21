@@ -193,7 +193,7 @@ fn hosts_bytes_match(current: &[u8], expected: &str, snapshot: Option<&[u8]>) ->
     }
 }
 
-pub fn read_system_hosts(target: &Path) -> Result<String, HostsApplyError> {
+pub(crate) fn read_system_hosts(target: &Path) -> Result<String, HostsApplyError> {
     decode_system_hosts(target, &read_system_hosts_bytes(target)?)
 }
 
@@ -454,7 +454,7 @@ mod tests {
     /// Tauri mock, which reimplements this function in JavaScript. Both
     /// implementations are asserted against the same file so they cannot
     /// drift apart silently; see the `$comment` in the fixture.
-    const CASES_JSON: &str = include_str!("../../../../test/fixtures/hosts_append_cases.json");
+    const CASES_JSON: &str = include_str!("../../../test/fixtures/hosts_append_cases.json");
 
     #[test]
     fn append_mode_matches_shared_behaviour_fixture() {

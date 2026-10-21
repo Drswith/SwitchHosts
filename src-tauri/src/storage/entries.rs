@@ -22,7 +22,7 @@ use super::error::StorageError;
 /// the `\r` half doesn't trip the lone-CR pass. Exposed at crate scope
 /// so callers (e.g. `refresh::refresh_one`) can compare normalized
 /// content against the on-disk LF view without duplicating the logic.
-pub fn normalize_to_lf(s: &str) -> String {
+pub(crate) fn normalize_to_lf(s: &str) -> String {
     s.replace("\r\n", "\n").replace('\r', "\n")
 }
 

@@ -1,0 +1,24 @@
+# Fork-owned copies of upstream sources, read by crates/upstream-sync.sh.
+#
+# Each entry is one whitespace-separated line:
+#   <fork path> <baseline sha> <upstream path> [<upstream path> ...]
+#
+# The fork path is a file in this fork that was derived from the listed
+# upstream files. The baseline is the full upstream commit that copy was last
+# synced to: `crates/upstream-sync.sh check` reports upstream changes to those
+# files made after it. After porting such a change by hand, run
+# `crates/upstream-sync.sh bump <fork path>` to move the baseline to
+# upstream/master. Paths are repo-relative; blank lines and comment lines
+# are ignored.
+
+crates/swh-core/src/api.rs             46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/commands.rs
+crates/swh-core/src/apply.rs           46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/commands.rs
+crates/swh-core/src/bootstrap.rs       46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/storage/mod.rs
+crates/swh-core/src/extra_tests.rs     46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/http.rs src-tauri/src/storage/config.rs
+crates/swh-core/src/find.rs            46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/find.rs
+crates/swh-core/src/http_api/mod.rs    46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/http_api.rs
+crates/swh-core/src/http_api/routes.rs 46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/http_api.rs
+crates/swh-core/src/http_api/server.rs 46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/http_api/server.rs
+crates/swh-core/src/refresh.rs         46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/refresh.rs
+crates/swh-core/src/toggle.rs          46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/http_api/toggle.rs
+crates/swh-core/src/toggle/tests.rs    46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/http_api/toggle/tests.rs

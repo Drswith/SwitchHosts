@@ -1,9 +1,8 @@
 //! Outbound notifications from the core to the host that embeds it.
 //!
-//! The Tauri app forwards these to its webview and tray; the native app
-//! forwards them to Swift through a C callback. Names and payloads keep
-//! the existing `{ "_args": [...] }` envelope so the renderer contract does
-//! not change.
+//! The native app forwards them to Swift through a C callback. Names and
+//! payloads match what upstream's Tauri app emits to its webview, in the same
+//! `{ "_args": [...] }` envelope, so the renderer contract does not change.
 
 use serde_json::Value;
 
