@@ -42,6 +42,10 @@ struct HighlightingEditor: NSViewRepresentable {
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
+        // Addresses and host names are not prose, so nothing is spell checked.
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.isGrammarCheckingEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isEditable = !readOnly
         textView.string = text
         Self.highlight(textView)

@@ -63,6 +63,7 @@ private struct GeneralTab: View {
                     }
                 Toggle("Hide at Launch", isOn: $hideAtLaunch)
                     .onChange(of: hideAtLaunch) { value in
+                        AppBehavior.hidesAtLaunch = value
                         Task { await model.updateConfig(["hide_at_launch": value]) }
                     }
                 Toggle("Hide Dock Icon", isOn: $hideDock)
