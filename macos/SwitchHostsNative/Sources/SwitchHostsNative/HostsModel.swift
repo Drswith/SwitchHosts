@@ -38,8 +38,6 @@ final class HostsModel: ObservableObject {
     @Published private(set) var retryImportURL: String?
     /// A newer release found by the startup update check, with its release page.
     @Published var updateNotice: (message: String, url: URL)?
-    /// Set at launch when "hide at launch" is on; the window closes itself once shown.
-    @Published var startsHidden = false
     /// Window and tray preferences, mirrored from the core so the views react to changes.
     @Published var useSystemWindowFrame = false
     /// Mirrors `hide_dock_icon`, so the tray can offer the opposite action.
@@ -62,6 +60,8 @@ final class HostsModel: ObservableObject {
     private var lastSave: Task<Bool, Never>?
 
     private var core: SwhCore?
+    /// Set when `start` runs, so the launch work happens once.
+    private var started = false
     private var eventTask: Task<Void, Never>?
     /// Where the window's own view state is kept (not the core's config, so the
     /// data stays the same as 5.0.2's).
@@ -80,10 +80,20 @@ final class HostsModel: ObservableObject {
         "hosts_content_changed_batch",
     ]
 
+    /// Opens the core while the app launches, before any window exists, and
+    /// returns the `hide_at_launch` preference, so the main window need not be
+    /// made at all. A core that cannot be opened is reported by `start`.
+    func openAtLaunch() -> Bool {
+        guard core == nil, let core = try? SwhCore() else { return false }
+        self.core = core
+        return (try? core.callNow(Bool.self, "config_get", ["hide_at_launch"])) ?? false
+    }
+
     func start() async {
-        guard core == nil else { return }
+        guard !started else { return }
+        started = true
         do {
-            let core = try SwhCore()
+            let core = try self.core ?? SwhCore()
             self.core = core
             // Preferences that affect the process itself, applied at launch.
             let hideDock = try await core.call(Bool.self, "config_get", ["hide_dock_icon"])
@@ -175,12 +185,12 @@ final class HostsModel: ObservableObject {
         }
     }
 
-    /// Preferences that act once at launch: quitting on close, hiding the window,
-    /// refreshing remote entries, and checking for a newer release.
+    /// Preferences that act once at launch: quitting on close, refreshing
+    /// remote entries, and checking for a newer release. Hiding the window is
+    /// decided earlier, in `openAtLaunch`.
     private func applyStartupPreferences(_ core: SwhCore) async {
         let config = await loadConfig()
         AppBehavior.quitOnClose = config["quit_on_close"] as? Bool ?? false
-        startsHidden = config["hide_at_launch"] as? Bool ?? false
         await loadPreferences()
         if config["refresh_remote_hosts_on_startup"] as? Bool == true {
             _ = try? await core.json("refresh_all_remote_hosts")
