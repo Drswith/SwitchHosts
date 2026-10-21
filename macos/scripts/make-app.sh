@@ -15,7 +15,15 @@ bin_dir="$(cd "$pkg" && swift build -c release --show-bin-path)"
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$bin_dir/SwitchHostsNative" "$app/Contents/MacOS/SwitchHosts"
+# SwiftPM links through swiftc, which hands clang --sysroot instead of
+# -isysroot, so the linker records the deployment target (13.0) as the SDK
+# version. macOS decides from that SDK version whether the app gets the
+# current system design, and runs a "macOS 13 SDK" app in compatibility mode
+# (old-style windows and menu bar panels that clash with current SwiftUI
+# controls). Record the SDK the code was actually compiled against.
+sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+xcrun vtool -set-build-version macos 13.0 "$sdk_version" -replace \
+  -output "$app/Contents/MacOS/SwitchHosts" "$bin_dir/SwitchHostsNative"
 
 # 5.0.2's app icon and its template tray icon.
 cp "$repo_root/src-tauri/icons/icon.icns" "$app/Contents/Resources/AppIcon.icns"

@@ -3,9 +3,10 @@ import SwiftUI
 import SwitchHostsCore
 
 /// Preferences, opened from the app menu (⌘,). The four tabs follow 5.0.2:
-/// General, Commands, Proxy, and Advanced. Each control writes its key through
-/// the core as soon as it changes; the proxy address and the command text are
-/// saved when the user commits them.
+/// General, Commands, Proxy, and Advanced, each a grouped form whose switches
+/// take the accent colour. Each control writes its key through the core as
+/// soon as it changes; the proxy address and the command text are saved when
+/// the user commits them.
 struct PreferencesView: View {
     @ObservedObject var model: HostsModel
 
@@ -20,7 +21,8 @@ struct PreferencesView: View {
             AdvancedTab(model: model)
                 .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
         }
-        .frame(width: 560, height: 540)
+        .toggleStyle(.switch)
+        .frame(width: 560, height: 560)
     }
 }
 
@@ -72,11 +74,15 @@ private struct GeneralTab: View {
                         AppBehavior.quitOnClose = value
                         Task { await model.updateConfig(["quit_on_close": value]) }
                     }
+            }
+
+            Section {
                 Picker("Theme", selection: $theme) {
                     Text("System").tag("system")
                     Text("Light").tag("light")
                     Text("Dark").tag("dark")
                 }
+                .pickerStyle(.segmented)
                 .onChange(of: theme) { value in
                     AppTheme.apply(value)
                     Task { await model.updateConfig(["theme": value]) }
@@ -133,19 +139,27 @@ private struct GeneralTab: View {
             }
 
             Section("Updates") {
-                Toggle("Automatically Check for Updates", isOn: $autoCheckUpdate)
-                    .onChange(of: autoCheckUpdate) { value in
-                        Task { await model.updateConfig(["auto_check_update": value]) }
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Automatically Check for Updates")
+                        Text("When enabled, SwitchHosts will remind you when a new version is available and will not download or install updates automatically.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                Text("When enabled, SwitchHosts will remind you when a new version is available and will not download or install updates automatically.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("Check for Updates") {
-                    Task {
-                        let result = await model.checkForUpdate()
-                        updateMessage = result.message
-                        updateURL = result.url
+                    Spacer()
+                    Button("Check for Updates") {
+                        Task {
+                            let result = await model.checkForUpdate()
+                            updateMessage = result.message
+                            updateURL = result.url
+                        }
                     }
+                    Toggle("Automatically Check for Updates", isOn: $autoCheckUpdate)
+                        .labelsHidden()
+                        .onChange(of: autoCheckUpdate) { value in
+                            Task { await model.updateConfig(["auto_check_update": value]) }
+                        }
                 }
                 if !updateMessage.isEmpty {
                     Text(updateMessage).font(.callout).foregroundStyle(.secondary)
@@ -234,52 +248,56 @@ private struct CommandsTab: View {
     @State private var runs: [CommandRun] = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Commands After Hosts Are Applied")
-                .font(.headline)
-            Text("The following system commands will run after hosts are applied:")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            TextEditor(text: $command)
-                .font(.system(.body, design: .monospaced))
-                .frame(minHeight: 110)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
-            HStack {
-                Spacer()
-                Button("Save") {
-                    Task {
-                        await model.updateConfig(["cmd_after_hosts_apply": command])
-                        savedCommand = command
+        Form {
+            Section {
+                TextEditor(text: $command)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 110)
+                    .scrollContentBackground(.hidden)
+                HStack {
+                    Spacer()
+                    Button("Save") {
+                        Task {
+                            await model.updateConfig(["cmd_after_hosts_apply": command])
+                            savedCommand = command
+                        }
                     }
+                    .disabled(command == savedCommand)
                 }
-                .disabled(command == savedCommand)
+            } header: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Commands After Hosts Are Applied")
+                    Text("The following system commands will run after hosts are applied:")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
-            Divider()
-
-            HStack {
+            Section {
+              HStack {
                 Button(showHistory ? "Hide History" : "Show History") {
                     showHistory.toggle()
                     if showHistory { Task { await reload() } }
                 }
                 Spacer()
                 if showHistory {
-                    Button("Clear History", role: .destructive) {
+                    Button("Clear History") {
                         Task {
                             await model.clearCommandRuns()
                             await reload()
                         }
                     }
+                    .foregroundStyle(.red)
                     .disabled(runs.isEmpty)
                 }
-            }
-            if showHistory {
+              }
+              if showHistory {
                 if runs.isEmpty {
                     Text("No Records")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, minHeight: 120)
                 } else {
-                    List(runs) { run in
+                    ForEach(runs) { run in
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
                                 Image(systemName: run.success ? "checkmark.circle" : "xmark.circle")
@@ -302,11 +320,11 @@ private struct CommandsTab: View {
                             }
                         }
                     }
-                    .frame(minHeight: 180)
                 }
+              }
             }
         }
-        .padding(20)
+        .formStyle(.grouped)
         .task {
             let config = await model.loadConfig()
             command = config["cmd_after_hosts_apply"] as? String ?? ""
@@ -395,7 +413,8 @@ private struct ProxyTab: View {
 
 // MARK: - Advanced
 
-/// Domain resolution, startup refresh, tray title, the local HTTP API, and where the data lives.
+/// Domain resolution, startup refresh, tray title, system hosts history, the
+/// local HTTP API, and where the data lives.
 private struct AdvancedTab: View {
     @ObservedObject var model: HostsModel
 
@@ -413,6 +432,12 @@ private struct AdvancedTab: View {
     @State private var dataDir: DataDirStatus?
     @State private var sendUsageData = false
     @State private var trayShortcut = true
+    @State private var historyOn = true
+    @State private var historyLimit = 50
+
+    private var historyLimitChoices: [Int] {
+        Array(Set([10, 50, 100, 500, historyLimit])).sorted()
+    }
 
     var body: some View {
         Form {
@@ -481,6 +506,27 @@ private struct AdvancedTab: View {
                         Task { await model.savePreference(["tray_mini_window": value]) }
                     }
                 Text("When on, clicking the menu bar icon opens a small window. When off, it opens a menu.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("System Hosts Version History") {
+                Toggle("Record history", isOn: $historyOn)
+                    .onChange(of: historyOn) { value in
+                        guard loaded else { return }
+                        Task { await model.updateConfig(["history_enabled": value]) }
+                    }
+                Picker("Maximum Number of Records", selection: Binding(
+                    get: { historyLimit },
+                    set: { value in Task { await changeHistoryLimit(to: value) } }
+                )) {
+                    ForEach(historyLimitChoices, id: \.self) { value in
+                        Text(value == 0 ? LocalizedStringKey("Unlimited") : LocalizedStringKey(String(value))).tag(value)
+                    }
+                }
+                Text(historyOn
+                     ? "A copy of /etc/hosts is saved each time SwitchHosts writes it. The copies are listed under System Hosts."
+                     : "Recording is off. Existing history can still be viewed and deleted.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -610,9 +656,28 @@ private struct AdvancedTab: View {
         httpOn = config["http_api_on"] as? Bool ?? false
         httpOnlyLocal = config["http_api_only_local"] as? Bool ?? true
         httpPort = String(config["http_api_port"] as? Int ?? 50761)
+        let history = await model.historySettings()
+        historyOn = history.enabled
+        historyLimit = history.limit
         loaded = true
         httpStatus = httpOn ? await model.configureHTTPAPI(on: true, port: Int(httpPort) ?? 50761, onlyLocal: httpOnlyLocal) : ""
         dataDir = await model.dataDirStatus()
+    }
+
+    /// Lowering the limit deletes the oldest records, so the user confirms the count first.
+    private func changeHistoryLimit(to value: Int) async {
+        guard value != historyLimit else { return }
+        if let preview = await model.setHistoryLimit(value) {
+            let alert = NSAlert()
+            alert.messageText = String(localized: "Reduce history retention?")
+            alert.informativeText = String(localized: "\(preview.deleteCount) saved records will be deleted and \(preview.retainedCount) kept. Deleted records cannot be recovered.")
+            alert.addButton(withTitle: String(localized: "Save and delete \(preview.deleteCount) records"))
+            alert.addButton(withTitle: String(localized: "Cancel"))
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            await model.setHistoryLimit(value, confirmation: preview)
+        }
+        historyLimit = value
+        await model.loadHistory()
     }
 
     /// Saves the DoH template when it contains the `{domain}` placeholder.
