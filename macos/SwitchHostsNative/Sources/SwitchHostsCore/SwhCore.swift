@@ -74,15 +74,16 @@ public final class SwhCore: @unchecked Sendable {
 
     /// Runs `command` and decodes its value. A `null` result throws.
     public func call<T: Decodable>(_ type: T.Type, _ command: String, _ args: [Any] = []) async throws -> T {
-        let data = try await perform(command, args)
-        let envelope = try JSONDecoder().decode(Envelope<T>.self, from: data)
-        if !envelope.ok {
-            throw SwhError.command(envelope.error ?? "Unknown error")
+        try Self.value(T.self, from: try await perform(command, args))
+    }
+
+    /// Runs `command` on the calling thread and decodes its value. Only for
+    /// quick reads that launch has to wait for; everything else uses `call`.
+    public func callNow<T: Decodable>(_ type: T.Type, _ command: String, _ args: [Any] = []) throws -> T {
+        guard let handle else {
+            throw SwhError.command("The hosts core is closed.")
         }
-        guard let value = envelope.value else {
-            throw SwhError.malformedResponse
-        }
-        return value
+        return try Self.value(T.self, from: try Self.invoke(handle, command, try Self.encode(args)))
     }
 
     /// Runs `command` and returns its value as untyped JSON. Used where the
@@ -114,18 +115,38 @@ public final class SwhCore: @unchecked Sendable {
         guard let handle else {
             throw SwhError.command("The hosts core is closed.")
         }
-        let argsData = try JSONSerialization.data(withJSONObject: args, options: [.fragmentsAllowed])
-        let argsText = String(decoding: argsData, as: UTF8.self)
+        let argsText = try Self.encode(args)
         let box = HandleBox(raw: handle)
 
         return try await Task.detached(priority: .userInitiated) { () -> Data in
-            guard let raw = swh_invoke(box.raw, command, argsText) else {
-                throw SwhError.malformedResponse
-            }
-            let text = String(cString: raw)
-            swh_free_string(raw)
-            return Data(text.utf8)
+            try Self.invoke(box.raw, command, argsText)
         }.value
+    }
+
+    private static func encode(_ args: [Any]) throws -> String {
+        let argsData = try JSONSerialization.data(withJSONObject: args, options: [.fragmentsAllowed])
+        return String(decoding: argsData, as: UTF8.self)
+    }
+
+    /// Blocks until the core answers `command`.
+    private static func invoke(_ handle: OpaquePointer, _ command: String, _ argsText: String) throws -> Data {
+        guard let raw = swh_invoke(handle, command, argsText) else {
+            throw SwhError.malformedResponse
+        }
+        let text = String(cString: raw)
+        swh_free_string(raw)
+        return Data(text.utf8)
+    }
+
+    private static func value<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        let envelope = try JSONDecoder().decode(Envelope<T>.self, from: data)
+        if !envelope.ok {
+            throw SwhError.command(envelope.error ?? "Unknown error")
+        }
+        guard let value = envelope.value else {
+            throw SwhError.malformedResponse
+        }
+        return value
     }
 }
 

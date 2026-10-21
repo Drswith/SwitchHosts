@@ -87,9 +87,10 @@ struct ContentView: View {
             Task { await model.flushAutosave() }
         }
         .task {
-            await model.start()
-            if model.startsHidden {
-                model.startsHidden = false
+            // The model starts with the app; this only closes the window that
+            // systems before macOS 15 open at launch despite "hide at launch".
+            if AppBehavior.closesMainWindowAtLaunch {
+                AppBehavior.closesMainWindowAtLaunch = false
                 NSApp.windows.first { $0.isVisible && $0.canBecomeMain }?.close()
             }
         }

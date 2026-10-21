@@ -6,6 +6,9 @@ import SwitchHostsCore
 enum AppBehavior {
     /// Whether closing the last window quits the app (preference `quit_on_close`).
     static var quitOnClose = false
+    /// Set at launch before macOS 15 when "hide at launch" is on. Those systems
+    /// always open the main window, so it closes itself as soon as it shows.
+    @MainActor static var closesMainWindowAtLaunch = false
     /// Whether the editor holds edits that are not saved yet.
     @MainActor static var hasUnsavedEdits: () -> Bool = { false }
     /// Runs before the app quits when there are unsaved edits: saves them.
@@ -34,12 +37,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct SwitchHostsNativeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model = HostsModel()
+    @StateObject private var model: HostsModel
+    /// The `hide_at_launch` preference, read before any scene is made.
+    private let hidesAtLaunch: Bool
+
+    init() {
+        let model = HostsModel()
+        hidesAtLaunch = model.openAtLaunch()
+        if #unavailable(macOS 15.0) {
+            AppBehavior.closesMainWindowAtLaunch = hidesAtLaunch
+        }
+        _model = StateObject(wrappedValue: model)
+        // The tray needs the model whether or not the main window opens.
+        Task { await model.start() }
+    }
 
     var body: some Scene {
-        WindowGroup("SwitchHosts", id: "main") {
-            ContentView(model: model)
-        }
+        mainWindow
         // The window cannot shrink below the content's minimum size, so nothing
         // at the edges (the sidebar's foot, the banners) is cut off.
         .windowResizability(.contentMinSize)
@@ -92,6 +106,22 @@ struct SwitchHostsNativeApp: App {
             TrayLabel(model: model)
         }
         .menuBarExtraStyle(.window)
+    }
+
+    /// The main window. A window group rather than a single `Window`, because
+    /// a closed group window is freed while a `Window` is kept in memory; Show
+    /// Main Window brings an open one forward instead of opening another. With
+    /// "hide at launch" on, macOS 15 and later do not make it at launch at
+    /// all; earlier systems close it as it opens.
+    private var mainWindow: some Scene {
+        let window = WindowGroup("SwitchHosts", id: "main") {
+            ContentView(model: model)
+        }
+        if #available(macOS 15.0, *) {
+            return window.defaultLaunchBehavior(hidesAtLaunch ? .suppressed : .automatic)
+        } else {
+            return window
+        }
     }
 }
 

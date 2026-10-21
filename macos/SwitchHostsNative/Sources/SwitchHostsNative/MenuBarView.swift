@@ -57,8 +57,8 @@ struct TrayHeader: View {
             }
             Spacer()
             Button {
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "main")
+                closeTrayWindow()
+                openWindow.showMainWindow()
             } label: {
                 Image(systemName: "macwindow")
                     .font(.system(size: 13))
@@ -147,12 +147,13 @@ struct TrayFooter: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             Button {
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "main")
+                closeTrayWindow()
+                openWindow.showMainWindow()
             } label: {
                 Text("Show Main Window")
             }
             Button {
+                closeTrayWindow()
                 Task { await model.setDockIconHidden(!model.dockIconHidden) }
             } label: {
                 Text(model.dockIconHidden ? "Show Dock Icon" : "Hide Dock Icon")
@@ -182,5 +183,36 @@ struct TrayFooter: View {
 
     static var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+    }
+}
+
+/// Closes the menu bar window, as a menu closes once an item is chosen. The
+/// window style stays open after a button in it runs, and SwiftUI has no call
+/// that closes it. Closing the window itself leaves the status item thinking
+/// it is still open, so its next click does nothing; this goes the way
+/// Escape does instead.
+@MainActor
+private func closeTrayWindow() {
+    // The status item's window is a panel; the main and settings windows are not.
+    guard NSApp.keyWindow is NSPanel else { return }
+    NSApp.sendAction(#selector(NSResponder.cancelOperation(_:)), to: nil, from: nil)
+}
+
+extension OpenWindowAction {
+    /// Brings the main window forward, or opens it when there is none. Opening
+    /// the window group again would stack a second main window over the first.
+    @MainActor
+    func showMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        // SwiftUI names the group's windows "main-AppWindow-<n>".
+        let open = NSApp.windows.first {
+            $0.identifier?.rawValue.hasPrefix("main-") == true && ($0.isVisible || $0.isMiniaturized)
+        }
+        if let open {
+            open.deminiaturize(nil)
+            open.makeKeyAndOrderFront(nil)
+        } else {
+            self(id: "main")
+        }
     }
 }
