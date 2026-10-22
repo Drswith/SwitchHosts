@@ -837,7 +837,8 @@ private struct DetailColumn: View {
                     Button("Edit…") { model.entryPrompt = .edit(node) }
                 }
             } else if let node = model.selectedNode, !node.isFolder {
-                DetailBody(model: model, title: node.title ?? node.id, readOnly: !node.isLocal) {
+                DetailBody(model: model, title: node.title ?? node.id, readOnly: !node.isLocal,
+                           loaded: model.contentID == node.id) {
                     Tag(Text(verbatim: Format.kind(of: node)))
                     Tag(node.isOn ? Text("Enabled") : Text("Disabled"), style: node.isOn ? .enabled : .plain)
                     Tag(Text(verbatim: detailCount(node)), style: .bare)
@@ -871,6 +872,9 @@ private struct DetailBody<Tags: View, Strip: View>: View {
     @ObservedObject var model: HostsModel
     let title: String
     let readOnly: Bool
+    /// Whether the editor holds the entry's own text. Until then an editable
+    /// entry takes no typing, so nothing typed is lost or saved elsewhere.
+    var loaded = true
     @ViewBuilder var tags: () -> Tags
     @ViewBuilder var strip: () -> Strip
 
@@ -886,7 +890,7 @@ private struct DetailBody<Tags: View, Strip: View>: View {
             if readOnly {
                 HighlightingEditor(text: .constant(model.content), readOnly: true, reveal: model.reveal)
             } else {
-                HighlightingEditor(text: $model.content, reveal: model.reveal, onPause: model.editorPaused)
+                HighlightingEditor(text: $model.content, readOnly: !loaded, reveal: model.reveal, onPause: model.editorPaused)
             }
         }
     }

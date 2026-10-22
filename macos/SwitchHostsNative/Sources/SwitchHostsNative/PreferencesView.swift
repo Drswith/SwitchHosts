@@ -92,10 +92,11 @@ private struct GeneralTab: View {
                     .onChange(of: useSystemFrame) { value in
                         Task { await model.savePreference(["use_system_window_frame": value]) }
                     }
+                // The tags are the locale names 5.0.2 reads from the shared config.
                 Picker("Language", selection: $language) {
                     Text("Follow System").tag("system")
-                    Text("简体中文").tag("zh_CN")
-                    Text("English").tag("en_US")
+                    Text("简体中文").tag("zh")
+                    Text("English").tag("en")
                 }
                 .onChange(of: language) { value in
                     applyLanguage(value)
@@ -199,7 +200,7 @@ private struct GeneralTab: View {
         choiceMode = config["choice_mode"] as? Int ?? 2
         autoCheckUpdate = config["auto_check_update"] as? Bool ?? true
         useSystemFrame = config["use_system_window_frame"] as? Bool ?? false
-        language = config["locale"] as? String ?? "system"
+        language = Self.pickerLanguage(forLocale: config["locale"] as? String)
         languageAtLaunch = language
         loaded = true
         helperStatus = await model.helperCommand("helper_status")
@@ -209,9 +210,20 @@ private struct GeneralTab: View {
     /// Writing it here takes effect on the next launch.
     private func applyLanguage(_ value: String) {
         switch value {
-        case "zh_CN": UserDefaults.standard.set(["zh-Hans"], forKey: "AppleLanguages")
-        case "en_US": UserDefaults.standard.set(["en"], forKey: "AppleLanguages")
+        case "zh": UserDefaults.standard.set(["zh-Hans"], forKey: "AppleLanguages")
+        case "en": UserDefaults.standard.set(["en"], forKey: "AppleLanguages")
         default: UserDefaults.standard.removeObject(forKey: "AppleLanguages")
+        }
+    }
+
+    /// The picker choice for a saved locale. 5.0.2 also accepts the aliases
+    /// below; other languages it offers have no translation here, so the app
+    /// follows the system for them and the saved value is left alone.
+    static func pickerLanguage(forLocale locale: String?) -> String {
+        switch locale {
+        case "zh", "cn", "zh-CN", "zh_CN": return "zh"
+        case "en", "en_US": return "en"
+        default: return "system"
         }
     }
 

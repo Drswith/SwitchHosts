@@ -67,6 +67,9 @@ struct HighlightingEditor: NSViewRepresentable {
             // A pause that was waiting belongs to the text being replaced.
             context.coordinator.pause.cancel()
             textView.string = text
+            // The undo steps recorded so far belong to the replaced text (often
+            // another entry); applied to this one they would corrupt it.
+            textView.undoManager?.removeAllActions()
             Self.highlight(textView)
             // Setting the string does not post a change notification, so the gutter is redrawn here.
             (scroll.verticalRulerView as? LineNumberRuler)?.needsDisplay = true

@@ -105,6 +105,25 @@ final class SwhCoreTests: XCTestCase {
         XCTAssertEqual(nodes.first?.isOn, false, "a rejected toggle must not change the saved state")
     }
 
+    /// Re-applying after a content change reaches the core and writes nothing
+    /// without a write mode, so the test never touches the real system hosts file.
+    func testReapplyWritesNothingWithoutAWriteMode() async throws {
+        let internalDir = root.appendingPathComponent("internal", isDirectory: true)
+        try FileManager.default.createDirectory(at: internalDir, withIntermediateDirectories: true)
+        try Data(#"{"write_mode": ""}"#.utf8).write(to: internalDir.appendingPathComponent("config.json"))
+
+        let core = try SwhCore(root: root.path)
+        defer { core.close() }
+
+        let tree: [[String: Any]] = [["id": "a", "title": "A", "type": "local", "on": true]]
+        try await core.send("set_list", [tree])
+
+        let afterAnEdit = try await core.call(Bool.self, "reapply_saved_selection", [["a"]])
+        let afterAReorder = try await core.call(Bool.self, "reapply_saved_selection")
+        XCTAssertFalse(afterAnEdit)
+        XCTAssertFalse(afterAReorder)
+    }
+
     /// Trash round trip: move out, restore, then move again and delete for good.
     func testTrashRoundTripRestoresAndDeletes() async throws {
         let core = try SwhCore(root: root.path)

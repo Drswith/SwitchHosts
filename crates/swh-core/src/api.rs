@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 
 use std::path::Path;
 
+use crate::apply;
 use crate::events::{EventSink, TRAY_TITLE_REFRESH};
 use crate::find::{self, FindOptions, FindReplaceOneArgs};
 use crate::hosts_apply;
@@ -989,6 +990,19 @@ pub async fn dispatch(
             return toggle::toggle_item(state, events, id)
                 .await
                 .map(|()| Value::Null)
+                .map_err(|e| e.to_string());
+        }
+        // args[0]: the ids whose content changed, or null after a reorder.
+        "reapply_saved_selection" => {
+            let changed: Option<Vec<String>> = match args.into_iter().next() {
+                None | Some(Value::Null) => None,
+                Some(ids) => Some(serde_json::from_value(ids).map_err(|_| {
+                    "reapply_saved_selection: args[0] must be an array of ids".to_string()
+                })?),
+            };
+            return apply::reapply_saved_selection(state, events, changed.as_deref())
+                .await
+                .map(|applied| json!(applied))
                 .map_err(|e| e.to_string());
         }
         other => return Err(format!("unknown command: {other}")),

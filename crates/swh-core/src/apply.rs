@@ -4,11 +4,12 @@
 //! announce `system_hosts_updated`, ask the host to refresh its tray title,
 //! and only then run `cmd_after_hosts_apply` (which may take up to 30s).
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::events::{EventSink, TRAY_TITLE_REFRESH};
 use crate::hosts_apply::{self, write::ApplyOutcome, HostsApplyError};
-use crate::storage::AppState;
+use crate::storage::{manifest::{self, Manifest}, AppState};
+use crate::toggle::{ensure_toggle_allowed, ToggleError};
 
 /// Apply `content` to the system hosts file.
 ///
@@ -84,4 +85,129 @@ pub async fn apply_aggregated_content(
     }
 
     Ok(outcome)
+}
+
+/// Apply the saved selection again after entry content or the enabled order
+/// changed, as upstream's renderer does on `hosts_content_changed` and after a
+/// reorder (`applyChangedRemoteHostsToSystem`, List `onChange`). With
+/// `changed`, nothing is written unless one of those entries is switched on.
+/// Returns whether the system file was applied.
+///
+/// Shares the toggle's serialization and recovery bookkeeping: it waits for
+/// an apply in progress, refuses while an earlier application is unresolved,
+/// and never writes with an unset write mode.
+pub async fn reapply_saved_selection(
+    state: &AppState,
+    events: &dyn EventSink,
+    changed: Option<&[String]>,
+) -> Result<bool, ToggleError> {
+    let recovery = &state.application_recovery;
+    let _apply_guard = recovery.lock_apply().await;
+    state.require_data_dir_usable()?;
+    ensure_toggle_allowed(recovery)?;
+    let (write_mode, remove_duplicate) = {
+        let config = state.config.lock().expect("config mutex poisoned");
+        (config.write_mode.clone(), config.remove_duplicate_records)
+    };
+    if write_mode.is_empty() {
+        return Ok(false);
+    }
+    let content = {
+        let _guard = state.lock_store()?;
+        let saved = Manifest::load(&state.paths)?;
+        if let Some(ids) = changed {
+            let is_on = |id: &String| {
+                manifest::find_node(&saved.root, id)
+                    .and_then(|node| node.get("on").and_then(Value::as_bool))
+                    .unwrap_or(false)
+            };
+            if !ids.iter().any(is_on) {
+                return Ok(false);
+            }
+        }
+        hosts_apply::aggregate_selected_content(&saved.root, &state.paths, remove_duplicate)?
+    };
+
+    recovery.begin();
+    let outcome = match apply_aggregated_content(state, events, &content).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            recovery.apply_failed();
+            return Err(ToggleError::Apply(error));
+        }
+    };
+    if recovery.finish(&outcome.new_content).is_some() {
+        return Err(ToggleError::RecoveryRequired);
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::NoopEvents;
+    use crate::storage::{AppConfig, V5Paths};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Mutex;
+
+    /// A fresh data root holding one local entry `a` (on when `on`). Built
+    /// directly, so no fallback can reach a real data folder.
+    fn state_with_entry(on: bool) -> AppState {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "swh-reapply-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let paths = V5Paths::under(root);
+        paths.ensure_dirs().unwrap();
+        let state = AppState {
+            paths,
+            config: Mutex::new(AppConfig::default()),
+            store_lock: Mutex::new(()),
+            application_recovery: Default::default(),
+            config_write_lock: Mutex::new(()),
+            update_check_lock: tokio::sync::Mutex::new(()),
+            is_will_quit: AtomicBool::new(false),
+            last_geometry_persist_ms: AtomicU64::new(0),
+            data_dir_recovery: None,
+        };
+        let mut saved = Manifest::load(&state.paths).unwrap();
+        saved.root = vec![json!({ "id": "a", "type": "local", "title": "a", "on": on })];
+        saved.save(&state.paths).unwrap();
+        state
+    }
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|id| id.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn changes_to_entries_that_are_off_write_nothing() {
+        let state = state_with_entry(false);
+        let applied = reapply_saved_selection(&state, &NoopEvents, Some(&ids(&["a", "missing"])))
+            .await
+            .unwrap();
+        assert!(!applied);
+        assert!(!state.application_recovery.is_pending());
+    }
+
+    #[tokio::test]
+    async fn an_unset_write_mode_writes_nothing() {
+        let state = state_with_entry(true);
+        state.config.lock().unwrap().write_mode.clear();
+        let applied = reapply_saved_selection(&state, &NoopEvents, Some(&ids(&["a"])))
+            .await
+            .unwrap();
+        assert!(!applied);
+        assert!(!state.application_recovery.is_pending());
+    }
+
+    #[tokio::test]
+    async fn a_pending_application_is_refused_before_any_write() {
+        let state = state_with_entry(true);
+        state.application_recovery.begin();
+        let result = reapply_saved_selection(&state, &NoopEvents, Some(&ids(&["a"]))).await;
+        assert!(matches!(result, Err(ToggleError::RecoveryRequired)));
+    }
 }
