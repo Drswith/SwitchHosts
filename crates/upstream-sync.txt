@@ -21,4 +21,3 @@ crates/swh-core/src/http_api/routes.rs 46b3bca79d07e755b07316cad03132172d52f581 
 crates/swh-core/src/http_api/server.rs 46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/http_api/server.rs
 crates/swh-core/src/refresh.rs         46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/refresh.rs
 crates/swh-core/src/toggle.rs          46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/http_api/toggle.rs
-crates/swh-core/src/toggle/tests.rs    46b3bca79d07e755b07316cad03132172d52f581 src-tauri/src/http_api/toggle/tests.rs

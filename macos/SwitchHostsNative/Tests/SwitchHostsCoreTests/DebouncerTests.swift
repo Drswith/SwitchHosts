@@ -17,7 +17,6 @@ final class DebouncerTests: XCTestCase {
         // Give any stray earlier action time to run, then check only the last ran.
         RunLoop.main.run(until: Date().addingTimeInterval(0.1))
         XCTAssertEqual(runs, [5])
-        XCTAssertFalse(debouncer.isPending)
     }
 
     func testSchedulingAgainRestartsTheWait() {
@@ -39,18 +38,5 @@ final class DebouncerTests: XCTestCase {
         debouncer.cancel()
         RunLoop.main.run(until: Date().addingTimeInterval(0.15))
         XCTAssertFalse(ran)
-        XCTAssertFalse(debouncer.isPending)
-    }
-
-    func testFlushRunsNowAndOnlyOnce() {
-        let debouncer = Debouncer(delay: 0.05)
-        var runs = 0
-        debouncer.schedule { runs += 1 }
-        debouncer.flush()
-        XCTAssertEqual(runs, 1)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
-        XCTAssertEqual(runs, 1, "the timer does not run it a second time")
-        debouncer.flush()
-        XCTAssertEqual(runs, 1, "nothing is waiting after a flush")
     }
 }

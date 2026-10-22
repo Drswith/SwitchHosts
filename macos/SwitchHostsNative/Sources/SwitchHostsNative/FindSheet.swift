@@ -289,7 +289,7 @@ private struct ResultHeader: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             if item.isReadOnly {
-                ReadOnlyBadge()
+                Tag("Read Only")
             }
         }
         .padding(.horizontal, 6)

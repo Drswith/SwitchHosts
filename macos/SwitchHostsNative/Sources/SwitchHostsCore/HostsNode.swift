@@ -17,8 +17,6 @@ public struct HostsNode: Decodable, Identifiable, Equatable, Sendable {
     public let refreshInterval: Int?
     /// Last successful refresh, as the core formats it.
     public let lastRefresh: String?
-    /// Folders: whether the sidebar shows the folder closed.
-    public let isCollapsed: Bool?
     /// Folders: 0 inherits the global choice mode, 1 allows one enabled child, 2 allows many.
     public let folderMode: Int?
     /// Groups: the ids of the local and remote entries the group lists.
@@ -29,7 +27,6 @@ public struct HostsNode: Decodable, Identifiable, Equatable, Sendable {
         case isSys = "is_sys"
         case refreshInterval = "refresh_interval"
         case lastRefresh = "last_refresh"
-        case isCollapsed = "is_collapsed"
         case folderMode = "folder_mode"
     }
 
@@ -40,7 +37,6 @@ public struct HostsNode: Decodable, Identifiable, Equatable, Sendable {
     /// missing type is local, as in older data.
     public var isLocal: Bool { type == nil || type == "local" }
     public var isOn: Bool { on ?? false }
-    public var isClosed: Bool { isCollapsed ?? false }
 }
 
 /// One entry in the trashcan, as the core serialises it.

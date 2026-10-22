@@ -42,7 +42,6 @@ final class HostsModel: ObservableObject {
     @Published var useSystemWindowFrame = false
     /// Mirrors `hide_dock_icon`, so the tray can offer the opposite action.
     @Published private(set) var dockIconHidden = false
-    @Published var trayMiniWindow = true
     @Published var leftPanelShown = true
     /// The saved write mode ("append", "overwrite", or empty before the first apply).
     @Published private(set) var writeMode = ""
@@ -74,6 +73,11 @@ final class HostsModel: ObservableObject {
     private var pendingReapplyIDs: Set<String> = []
     private var pendingReapplyOrder = false
     private var isReapplying = false
+    /// The run applying them; quitting waits for it.
+    private var reapplyTask: Task<Void, Never>?
+    /// Whether an earlier application is unresolved: the core then refuses
+    /// switches until the saved selection is applied again.
+    @Published private(set) var recoveryPending = false
 
     private var core: SwhCore?
     /// Set when `start` runs, so the launch work happens once.
@@ -94,6 +98,8 @@ final class HostsModel: ObservableObject {
         "reload_list",
         "hosts_content_changed",
         "hosts_content_changed_batch",
+        // A refresh can change per-domain status without changing the content.
+        "hosts_refreshed",
     ]
 
     /// Events naming entries whose content changed, such as a remote refresh.
@@ -139,6 +145,7 @@ final class HostsModel: ObservableObject {
                     if Self.contentChangingEvents.contains(event.name) {
                         self?.reapplyChangedContent(Self.changedIDs(in: event))
                     }
+                    await self?.reloadShown(after: event)
                 }
             }
             await reload()
@@ -146,10 +153,14 @@ final class HostsModel: ObservableObject {
             // Quitting waits for unsaved edits to be written.
             AppBehavior.hasUnsavedEdits = { [weak self] in
                 guard let self else { return false }
-                return self.isDirty && self.selectedNode?.isLocal == true
+                return (self.isDirty && self.selectedNode?.isLocal == true) || self.isReapplying
             }
             AppBehavior.beforeQuit = { [weak self] in
-                await self?.flushAutosave(askOnFailure: true) ?? true
+                guard let self else { return true }
+                guard await self.flushAutosave(askOnFailure: true) else { return false }
+                // The last edit of an enabled entry still reaches the system file.
+                await self.reapplyTask?.value
+                return true
             }
             // The view from last time, or System Hosts with the current file
             // selected, as 5.0.2 opens on it.
@@ -233,15 +244,25 @@ final class HostsModel: ObservableObject {
             await updateConfig(["locale": fixed])
         }
         await loadPreferences()
-        if config["refresh_remote_hosts_on_startup"] as? Bool == true {
-            _ = try? await core.json("refresh_all_remote_hosts")
-            await reload()
-        }
-        if config["auto_check_update"] as? Bool ?? true {
-            let result = await checkForUpdate()
-            if let url = result.url {
-                updateNotice = (result.message, url)
+        // Refreshing remote entries at launch is the core's scanner's job.
+        Task { [weak self] in
+            while let self {
+                await self.checkForUpdateIfEnabled()
+                try? await Task.sleep(nanoseconds: Self.updateCheckInterval)
             }
+        }
+    }
+
+    /// How often a running app looks for a newer release, as 5.0.2 does.
+    static let updateCheckInterval: UInt64 = 12 * 60 * 60 * 1_000_000_000
+
+    /// Looks for a newer release when "check for updates" is on, and shows
+    /// the notice when there is one.
+    func checkForUpdateIfEnabled() async {
+        guard await loadConfig()["auto_check_update"] as? Bool ?? true else { return }
+        let result = await checkForUpdate()
+        if let url = result.url {
+            updateNotice = (result.message, url)
         }
     }
 
@@ -259,7 +280,6 @@ final class HostsModel: ObservableObject {
     func loadPreferences() async {
         let config = await loadConfig()
         useSystemWindowFrame = config["use_system_window_frame"] as? Bool ?? false
-        trayMiniWindow = config["tray_mini_window"] as? Bool ?? true
         leftPanelShown = config["left_panel_show"] as? Bool ?? true
         writeMode = config["write_mode"] as? String ?? ""
     }
@@ -290,9 +310,6 @@ final class HostsModel: ObservableObject {
             // A folder view whose folder went away falls back to all entries.
             if case .folder(let id) = sidebar, node(withID: id)?.isFolder != true {
                 setSidebar(.all)
-            }
-            if sidebar == .system {
-                await loadHistory()
             }
             // An entry removed elsewhere (another window, the HTTP API) leaves
             // nothing to show.
@@ -336,7 +353,7 @@ final class HostsModel: ObservableObject {
         }
         guard !isReapplying else { return }
         isReapplying = true
-        Task { await runPendingReapplies() }
+        reapplyTask = Task { await runPendingReapplies() }
     }
 
     private func runPendingReapplies() async {
@@ -351,6 +368,42 @@ final class HostsModel: ObservableObject {
             } catch {
                 errorMessage = error.localizedDescription
             }
+            await refreshRecoveryState()
+        }
+    }
+
+    /// Reads whether an earlier application is still unresolved.
+    func refreshRecoveryState() async {
+        guard let core else { return }
+        recoveryPending = (try? await core.call(Bool.self, "application_recovery_pending")) ?? false
+    }
+
+    /// Applies the saved selection again to resolve an unresolved application,
+    /// as 5.0.2's recovery notice does. A verified write clears the state.
+    func resolveRecovery() async {
+        guard let core else { return }
+        do {
+            try await core.send("reapply_saved_selection", [NSNull(), true])
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        await refreshRecoveryState()
+        await reload()
+    }
+
+    /// Keeps what the window shows current after the core changed it: the
+    /// system hosts file and its history after an apply, and the selected
+    /// entry's text after a refresh (unless it holds unsaved edits).
+    private func reloadShown(after event: SwhEvent) async {
+        if event.name == "system_hosts_updated", sidebar == .system {
+            await loadHistory()
+            if selection == Self.systemHostsID {
+                await loadSystemHosts()
+            }
+        } else if Self.contentChangingEvents.contains(event.name), let id = selection,
+                  Self.changedIDs(in: event).contains(id), !isDirty {
+            await loadContent(for: id)
         }
     }
 
@@ -451,21 +504,27 @@ final class HostsModel: ObservableObject {
 
     private var lineCountTask: Task<Void, Never>?
 
-    /// Re-reads the text of every local entry to count its lines.
+    /// Counts the lines of local entries not counted yet. Saves, loads and
+    /// replacements keep the other counts current.
     private func refreshLineCounts() {
         guard let core else { return }
-        let ids = Library.entries(in: tree).filter(\.isLocal).map(\.id)
+        let ids = Set(Library.entries(in: tree).filter(\.isLocal).map(\.id))
+        if lineCounts.keys.contains(where: { !ids.contains($0) }) {
+            lineCounts = lineCounts.filter { ids.contains($0.key) }
+        }
+        let missing = ids.filter { lineCounts[$0] == nil }
+        guard !missing.isEmpty else { return }
         lineCountTask?.cancel()
         lineCountTask = Task {
             var counts: [String: Int] = [:]
-            for id in ids {
+            for id in missing {
                 guard !Task.isCancelled else { return }
                 if let text = try? await core.call(String.self, "get_hosts_content", [id]) {
                     counts[id] = Library.lineCount(of: text)
                 }
             }
             guard !Task.isCancelled else { return }
-            lineCounts = counts
+            lineCounts.merge(counts) { _, counted in counted }
         }
     }
 
@@ -560,6 +619,8 @@ final class HostsModel: ObservableObject {
         // The entry being left saves its edits first.
         guard await flushAutosave(askOnFailure: true) else { return }
         let load = beginContentLoad()
+        // A find result's place belongs to the text it was found in.
+        reveal = nil
         selection = id
         selectedIDs = rows ?? (id.map { [$0] } ?? [])
         if id == Self.systemHostsID {
@@ -589,7 +650,7 @@ final class HostsModel: ObservableObject {
 
     /// Starts a content load. The editor's text then belongs to no entry
     /// until the load finishes, so it is not saved anywhere.
-    private func beginContentLoad() -> Int {
+    func beginContentLoad() -> Int {
         contentLoad += 1
         contentID = nil
         return contentLoad
@@ -598,7 +659,7 @@ final class HostsModel: ObservableObject {
     /// Fills the editor with `text`, the content of `id`, unless a newer load
     /// started or the selection moved on meanwhile. Returns whether it did.
     @discardableResult
-    private func finishContentLoad(_ load: Int, of id: String?, text: String) -> Bool {
+    func finishContentLoad(_ load: Int, of id: String?, text: String) -> Bool {
         guard load == contentLoad, selection == id else { return false }
         content = text
         savedContent = text
@@ -733,6 +794,7 @@ final class HostsModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+        await refreshRecoveryState()
         await reload()
     }
 
@@ -909,10 +971,12 @@ final class HostsModel: ObservableObject {
         await moveToTrash(ids: ids)
     }
 
-    /// The selected rows that can go to the trashcan (not the system hosts row).
+    /// The selected rows that can go to the trashcan (not the system hosts
+    /// row), leaving out rows the search field hides.
     var trashableSelection: [String] {
         let ids = selectedIDs.isEmpty ? Set(selection.map { [$0] } ?? []) : selectedIDs
-        return allNodes.map(\.id).filter { ids.contains($0) }
+        let listed = Set(listedRowIDs)
+        return allNodes.map(\.id).filter { ids.contains($0) && listed.contains($0) }
     }
 
     func moveToTrash(ids: [String]) async {
@@ -1009,17 +1073,28 @@ final class HostsModel: ObservableObject {
         do {
             let status = try await core.json("http_api_configure", [on, port, onlyLocal]) as? [String: Any] ?? [:]
             errorMessage = nil
-            if status["running"] as? Bool == true {
-                return String(localized: "Listening on \(status["address"] as? String ?? "")")
-            }
-            if let error = status["error"] as? [String: Any], let reason = error["reason"] as? String {
-                return String(localized: "Not running: \(CoreText.localized(reason))")
-            }
-            return on ? String(localized: "Not running.") : String(localized: "Off.")
+            return Self.describeHTTPAPI(status, on: on)
         } catch {
             errorMessage = error.localizedDescription
             return String(localized: "Not running.")
         }
+    }
+
+    /// The listener's state while it is meant to be on, read without changing anything.
+    func httpAPIStatus() async -> String {
+        guard let core else { return "" }
+        let status = (try? await core.json("http_api_status") as? [String: Any]) ?? [:]
+        return Self.describeHTTPAPI(status, on: true)
+    }
+
+    private static func describeHTTPAPI(_ status: [String: Any], on: Bool) -> String {
+        if status["running"] as? Bool == true {
+            return String(localized: "Listening on \(status["address"] as? String ?? "")")
+        }
+        if let error = status["error"] as? [String: Any], let reason = error["reason"] as? String {
+            return String(localized: "Not running: \(CoreText.localized(reason))")
+        }
+        return on ? String(localized: "Not running.") : String(localized: "Off.")
     }
 
     // ---- find and replace --------------------------------------------------
@@ -1055,6 +1130,7 @@ final class HostsModel: ObservableObject {
             let replaced = try await core.call(Bool.self, "find_replace_one", [args])
             errorMessage = nil
             if replaced {
+                lineCounts[hit.itemId] = nil
                 reapplyChangedContent([hit.itemId])
             }
             await reload()
@@ -1111,6 +1187,7 @@ final class HostsModel: ObservableObject {
             let options: [String: Any] = ["is_regexp": regexp, "is_ignore_case": ignoreCase]
             let outcome = try await core.call(ReplaceOutcome.self, "find_replace_all", [keyword, options, replacement])
             errorMessage = nil
+            outcome.itemIds.forEach { lineCounts[$0] = nil }
             reapplyChangedContent(outcome.itemIds)
             await reload()
             if let id = selection, outcome.itemIds.contains(id) {
@@ -1203,7 +1280,9 @@ final class HostsModel: ObservableObject {
 
     /// Switches the data folder. Returns true when the app must restart to use it.
     func applyDataDir(_ url: URL, copy: Bool) async -> Bool {
-        guard let core else { return false }
+        // Edits go to the current folder before the switch, so the restart has
+        // nothing left to save and cannot be cancelled by a failed save.
+        guard let core, await flushAutosave(askOnFailure: true) else { return false }
         do {
             let value = try await core.json("apply_data_dir", [url.path, copy]) as? [String: Any] ?? [:]
             errorMessage = nil
@@ -1216,7 +1295,7 @@ final class HostsModel: ObservableObject {
 
     /// Returns to the default data folder. Returns true when the app must restart.
     func resetDataDir() async -> Bool {
-        guard let core else { return false }
+        guard let core, await flushAutosave(askOnFailure: true) else { return false }
         do {
             let value = try await core.json("reset_data_dir") as? [String: Any] ?? [:]
             errorMessage = nil
@@ -1473,9 +1552,10 @@ final class HostsModel: ObservableObject {
         Task { await beginImport(from: url) }
     }
 
-    /// Applies the staged import. `mode` is "append" or "replace".
-    func commitImport(mode: String) async {
-        guard let core, let pending = pendingImport else { return }
+    /// Applies the staged import `pending`. `mode` is "append" or "replace".
+    /// The sheet passes it in: dismissing the sheet clears `pendingImport`.
+    func commitImport(_ pending: PendingImport, mode: String) async {
+        guard let core else { return }
         do {
             try await core.send("import_commit", [[
                 "id": pending.id,
@@ -1485,14 +1565,16 @@ final class HostsModel: ObservableObject {
             ]])
             pendingImport = nil
             errorMessage = nil
+            // Replaced entries can keep their ids with new text.
+            lineCounts = [:]
         } catch {
             errorMessage = error.localizedDescription
         }
         await reload()
     }
 
-    func cancelImport() async {
-        guard let core, let pending = pendingImport else { return }
+    func cancelImport(_ pending: PendingImport) async {
+        guard let core else { return }
         try? await core.send("import_discard", [pending.id])
         pendingImport = nil
     }
@@ -1502,10 +1584,19 @@ final class HostsModel: ObservableObject {
     private func editTree(selectingEdited: Bool = true, _ edit: (inout [TreeDocument.Node]) throws -> String) async {
         guard let core else { return }
         do {
-            let before = await rawList()
+            var before = await rawList()
             var list = before
-            let touchedID = try edit(&list)
-            try await core.send("set_list", [list, before])
+            var touchedID = try edit(&list)
+            do {
+                try await core.send("set_list", [list, before])
+            } catch {
+                // The tree changed between the read and the write (another
+                // edit, a refresh); make the edit once more on the new tree.
+                before = await rawList()
+                list = before
+                touchedID = try edit(&list)
+                try await core.send("set_list", [list, before])
+            }
             // Moving enabled entries changes the order their records are
             // applied in, so the system file is written again, as in 5.0.2.
             if Self.enabledOrder(in: list) != Self.enabledOrder(in: before) {
@@ -1784,6 +1875,7 @@ enum Library {
     /// Lines as the editor's gutter numbers them: none for empty text, and a
     /// final newline starts one more.
     static func lineCount(of text: String) -> Int {
-        text.isEmpty ? 0 : text.reduce(1) { $1 == "\n" ? $0 + 1 : $0 }
+        // Bytes, not Characters: "\r\n" is one Character that is not "\n".
+        text.isEmpty ? 0 : text.utf8.reduce(1) { $1 == 10 ? $0 + 1 : $0 }
     }
 }

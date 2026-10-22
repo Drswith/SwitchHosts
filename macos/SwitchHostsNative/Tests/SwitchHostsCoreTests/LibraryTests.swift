@@ -91,6 +91,7 @@ final class LibraryTests: XCTestCase {
         XCTAssertEqual(Library.lineCount(of: "127.0.0.1 a"), 1)
         XCTAssertEqual(Library.lineCount(of: "127.0.0.1 a\n"), 2)
         XCTAssertEqual(Library.lineCount(of: "a\nb\n\n"), 4)
+        XCTAssertEqual(Library.lineCount(of: "a\r\nb\r\nc"), 3, "Windows line endings count once")
     }
 
     func testSidebarItemsSurviveStorage() {
@@ -109,5 +110,13 @@ final class LibraryTests: XCTestCase {
         XCTAssertFalse(SidebarItem.remote.allowsReordering)
         XCTAssertFalse(SidebarItem.system.allowsReordering)
         XCTAssertFalse(SidebarItem.trash.allowsReordering)
+    }
+
+    /// The gutter counts lines on UTF-16 units, the way the header counts them.
+    @MainActor
+    func testTheGutterCountsLineFeedsOnly() {
+        let text = "a\r\nb\nc\n" as NSString
+        XCTAssertEqual(LineNumberRuler.newlineCount(in: text, NSRange(location: 0, length: text.length)), 3)
+        XCTAssertEqual(LineNumberRuler.newlineCount(in: text, NSRange(location: 3, length: 3)), 1)
     }
 }

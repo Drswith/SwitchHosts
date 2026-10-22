@@ -30,9 +30,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Quitting waits only when there is something to save.
         guard AppBehavior.hasUnsavedEdits(), let beforeQuit = AppBehavior.beforeQuit else { return .terminateNow }
         Task { @MainActor in
-            sender.reply(toApplicationShouldTerminate: await beforeQuit())
+            let quit = await beforeQuit()
+            if !quit { AppRelaunch.requested = false }
+            sender.reply(toApplicationShouldTerminate: quit)
         }
         return .terminateLater
+    }
+
+    @MainActor
+    func applicationWillTerminate(_ notification: Notification) {
+        if AppRelaunch.requested { AppRelaunch.launchReplacement() }
     }
 }
 
@@ -99,17 +106,10 @@ struct SwitchHostsNativeApp: App {
                 .tint(.accent)
         }
 
-        // One status item. With the tray shortcut on it opens the switch panel;
-        // with it off it opens a compact list of the same entries.
+        // One status item; it opens the switch panel.
         MenuBarExtra {
-            Group {
-                if model.trayMiniWindow {
-                    MenuBarView(model: model)
-                } else {
-                    TrayMenu(model: model)
-                }
-            }
-            .tint(.accent)
+            MenuBarView(model: model)
+                .tint(.accent)
         } label: {
             TrayLabel(model: model)
         }

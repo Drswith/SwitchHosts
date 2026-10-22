@@ -4,9 +4,10 @@ import SwitchHostsCore
 
 /// Preferences, opened from the app menu (⌘,). The four tabs follow 5.0.2:
 /// General, Commands, Proxy, and Advanced, each a grouped form whose switches
-/// take the accent colour. Each control writes its key through the core as
-/// soon as it changes; the proxy address and the command text are saved when
-/// the user commits them.
+/// take the accent colour. Each control writes its key through the core when
+/// the user changes it (never when the tab loads the saved value); the proxy
+/// address, the DoH template, the API port and the command text are saved
+/// when the user commits them or leaves the tab.
 struct PreferencesView: View {
     @ObservedObject var model: HostsModel
 
@@ -26,18 +27,23 @@ struct PreferencesView: View {
     }
 }
 
+extension Binding {
+    /// Runs `save` when the user sets a value. Loading the saved value into the
+    /// state does not run it, so opening a tab writes nothing.
+    func onSet(_ save: @escaping (Value) -> Void) -> Binding<Value> {
+        Binding(get: { wrappedValue }, set: { wrappedValue = $0; save($0) })
+    }
+}
+
 // MARK: - General
 
 private struct GeneralTab: View {
     @ObservedObject var model: HostsModel
 
-    @State private var loaded = false
     @State private var launchAtLogin = false
     @State private var hideAtLaunch = false
-    @State private var hideDock = false
     @State private var quitOnClose = false
     @State private var theme = "system"
-    @State private var writeMode = "append"
     @State private var choiceMode = 2
     @State private var autoCheckUpdate = true
     @State private var useSystemFrame = false
@@ -50,57 +56,52 @@ private struct GeneralTab: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Launch at Login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { value in
-                        do {
-                            try LoginItem.setEnabled(value)
-                        } catch {
-                            launchAtLogin = LoginItem.isEnabled
-                            model.errorMessage = error.localizedDescription
-                            return
-                        }
-                        Task { await model.updateConfig(["launch_at_login": value]) }
+                Toggle("Launch at Login", isOn: $launchAtLogin.onSet { value in
+                    do {
+                        try LoginItem.setEnabled(value)
+                    } catch {
+                        launchAtLogin = LoginItem.isEnabled
+                        model.errorMessage = error.localizedDescription
+                        return
                     }
-                Toggle("Hide at Launch", isOn: $hideAtLaunch)
-                    .onChange(of: hideAtLaunch) { value in
-                        AppBehavior.hidesAtLaunch = value
-                        Task { await model.updateConfig(["hide_at_launch": value]) }
-                    }
-                Toggle("Hide Dock Icon", isOn: $hideDock)
-                    .onChange(of: hideDock) { value in
-                        Task { await model.setDockIconHidden(value) }
-                    }
-                Toggle("Quit App When Main Window Is Closed", isOn: $quitOnClose)
-                    .onChange(of: quitOnClose) { value in
-                        AppBehavior.quitOnClose = value
-                        Task { await model.updateConfig(["quit_on_close": value]) }
-                    }
+                    Task { await model.updateConfig(["launch_at_login": value]) }
+                })
+                Toggle("Hide at Launch", isOn: $hideAtLaunch.onSet { value in
+                    AppBehavior.hidesAtLaunch = value
+                    Task { await model.updateConfig(["hide_at_launch": value]) }
+                })
+                // The tray can change this too, so the switch reads the model's mirror.
+                Toggle("Hide Dock Icon", isOn: Binding(
+                    get: { model.dockIconHidden },
+                    set: { value in Task { await model.setDockIconHidden(value) } }
+                ))
+                Toggle("Quit App When Main Window Is Closed", isOn: $quitOnClose.onSet { value in
+                    AppBehavior.quitOnClose = value
+                    Task { await model.updateConfig(["quit_on_close": value]) }
+                })
             }
 
             Section {
-                Picker("Theme", selection: $theme) {
+                Picker("Theme", selection: $theme.onSet { value in
+                    AppTheme.apply(value)
+                    Task { await model.updateConfig(["theme": value]) }
+                }) {
                     Text("System").tag("system")
                     Text("Light").tag("light")
                     Text("Dark").tag("dark")
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: theme) { value in
-                    AppTheme.apply(value)
-                    Task { await model.updateConfig(["theme": value]) }
-                }
-                Toggle("Use System Window Frame", isOn: $useSystemFrame)
-                    .onChange(of: useSystemFrame) { value in
-                        Task { await model.savePreference(["use_system_window_frame": value]) }
-                    }
+                Toggle("Use System Window Frame", isOn: $useSystemFrame.onSet { value in
+                    Task { await model.savePreference(["use_system_window_frame": value]) }
+                })
                 // The tags are the locale names 5.0.2 reads from the shared config.
-                Picker("Language", selection: $language) {
+                Picker("Language", selection: $language.onSet { value in
+                    applyLanguage(value)
+                    Task { await model.savePreference(["locale": value == "system" ? NSNull() : value]) }
+                }) {
                     Text("Follow System").tag("system")
                     Text("简体中文").tag("zh")
                     Text("English").tag("en")
-                }
-                .onChange(of: language) { value in
-                    applyLanguage(value)
-                    Task { await model.savePreference(["locale": value == "system" ? NSNull() : value]) }
                 }
                 if language != languageAtLaunch {
                     HStack {
@@ -114,27 +115,27 @@ private struct GeneralTab: View {
             }
 
             Section {
-                Picker("Write Mode", selection: $writeMode) {
+                // The switch can set the write mode too, so the picker reads the model's mirror.
+                Picker("Write Mode", selection: Binding(
+                    get: { model.writeMode },
+                    set: { value in Task { await model.savePreference(["write_mode": value]) } }
+                )) {
                     Text("Append").tag("append")
                     Text("Overwrite").tag("overwrite")
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: writeMode) { value in
-                    Task { await model.updateConfig(["write_mode": value]) }
-                }
-                Text(writeMode == "append"
+                Text(model.writeMode != "overwrite"
                      ? "Append the new records to the end of the system hosts file."
                      : "Overwrite the system hosts file with the new records.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Picker("Choice Mode", selection: $choiceMode) {
+                Picker("Choice Mode", selection: $choiceMode.onSet { value in
+                    Task { await model.updateConfig(["choice_mode": value]) }
+                }) {
                     Text("Single").tag(1)
                     Text("Multiple").tag(2)
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: choiceMode) { value in
-                    Task { await model.updateConfig(["choice_mode": value]) }
-                }
                 Text("Only applies to top-level items; each folder can set its own choice mode.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -157,11 +158,14 @@ private struct GeneralTab: View {
                             updateURL = result.url
                         }
                     }
-                    Toggle("Automatically Check for Updates", isOn: $autoCheckUpdate)
-                        .labelsHidden()
-                        .onChange(of: autoCheckUpdate) { value in
-                            Task { await model.updateConfig(["auto_check_update": value]) }
+                    Toggle("Automatically Check for Updates", isOn: $autoCheckUpdate.onSet { value in
+                        Task {
+                            await model.updateConfig(["auto_check_update": value])
+                            // Turning it on checks at once, as 5.0.2 does.
+                            await model.checkForUpdateIfEnabled()
                         }
+                    })
+                    .labelsHidden()
                 }
                 if !updateMessage.isEmpty {
                     Text(updateMessage).font(.callout).foregroundStyle(.secondary)
@@ -193,16 +197,13 @@ private struct GeneralTab: View {
         let config = await model.loadConfig()
         launchAtLogin = LoginItem.isEnabled
         hideAtLaunch = config["hide_at_launch"] as? Bool ?? false
-        hideDock = config["hide_dock_icon"] as? Bool ?? false
         quitOnClose = config["quit_on_close"] as? Bool ?? false
         theme = config["theme"] as? String ?? "system"
-        writeMode = config["write_mode"] as? String ?? "append"
         choiceMode = config["choice_mode"] as? Int ?? 2
         autoCheckUpdate = config["auto_check_update"] as? Bool ?? true
         useSystemFrame = config["use_system_window_frame"] as? Bool ?? false
         language = Self.pickerLanguage(forLocale: config["locale"] as? String)
         languageAtLaunch = language
-        loaded = true
         helperStatus = await model.helperCommand("helper_status")
     }
 
@@ -367,22 +368,20 @@ private struct ProxyTab: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Use Proxy", isOn: $useProxy)
-                    .onChange(of: useProxy) { value in
-                        Task { await model.updateConfig(["use_proxy": value]) }
-                    }
+                Toggle("Use Proxy", isOn: $useProxy.onSet { value in
+                    Task { await model.updateConfig(["use_proxy": value]) }
+                })
                 Text("If enabled, remote Hosts downloads and app update checks/downloads will connect through the proxy.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Picker("Protocol", selection: $proxyProtocol) {
+                Picker("Protocol", selection: $proxyProtocol.onSet { value in
+                    Task { await model.updateConfig(["proxy_protocol": value]) }
+                }) {
                     Text("HTTP").tag("http")
                     Text("HTTPS").tag("https")
                     Text("SOCKS5").tag("socks5")
                 }
                 .disabled(!useProxy)
-                .onChange(of: proxyProtocol) { value in
-                    Task { await model.updateConfig(["proxy_protocol": value]) }
-                }
                 TextField("Host", text: $proxyHost)
                     .disabled(!useProxy)
                     .onSubmit(saveProxyAddress)
@@ -441,10 +440,12 @@ private struct AdvancedTab: View {
     @State private var httpOn = false
     @State private var httpOnlyLocal = true
     @State private var httpPort = "50761"
+    /// The port and template last saved, so leaving the tab saves only edits.
+    @State private var savedHTTPPort = "50761"
+    @State private var savedDNSTemplate = ""
     @State private var httpStatus = ""
     @State private var dataDir: DataDirStatus?
     @State private var sendUsageData = false
-    @State private var trayShortcut = true
     @State private var historyOn = true
     @State private var historyLimit = 50
 
@@ -455,15 +456,14 @@ private struct AdvancedTab: View {
     var body: some View {
         Form {
             Section {
-                Picker("Domain DNS resolver", selection: $dnsProvider) {
+                Picker("Domain DNS resolver", selection: $dnsProvider.onSet { value in
+                    Task { await model.updateConfig(["dns_provider": value]) }
+                }) {
                     Text("Ali DoH").tag("alidns")
                     Text("DNSPod").tag("dnspod")
                     Text("Cloudflare").tag("cloudflare")
                     Text("Google").tag("google")
                     Text("Custom").tag("custom")
-                }
-                .onChange(of: dnsProvider) { value in
-                    Task { await model.updateConfig(["dns_provider": value]) }
                 }
                 Text("DNS-over-HTTPS service used to resolve domain-type remote hosts entries.")
                     .font(.caption)
@@ -483,52 +483,36 @@ private struct AdvancedTab: View {
             }
 
             Section {
-                Toggle("Refresh Remote Hosts at Launch", isOn: $refreshOnLaunch)
-                    .onChange(of: refreshOnLaunch) { value in
-                        Task { await model.updateConfig(["refresh_remote_hosts_on_startup": value]) }
-                    }
+                Toggle("Refresh Remote Hosts at Launch", isOn: $refreshOnLaunch.onSet { value in
+                    Task { await model.updateConfig(["refresh_remote_hosts_on_startup": value]) }
+                })
                 Text("When enabled, every launch automatically refreshes all remote Hosts entries.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Toggle("Remove Duplicate Records", isOn: $removeDuplicates)
-                    .onChange(of: removeDuplicates) { value in
-                        Task { await model.updateConfig(["remove_duplicate_records": value]) }
-                    }
+                Toggle("Remove Duplicate Records", isOn: $removeDuplicates.onSet { value in
+                    Task { await model.updateConfig(["remove_duplicate_records": value]) }
+                })
                 Text("If a domain points to multiple IPs, only the first one will take effect, and the following ones will be converted into comments when hosts are applied.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Toggle("Show Title in Tray", isOn: $showTitleOnTray)
-                    .onChange(of: showTitleOnTray) { value in
-                        Task {
-                            await model.updateConfig(["show_title_on_tray": value])
-                            await model.reload()
-                        }
+                Toggle("Show Title in Tray", isOn: $showTitleOnTray.onSet { value in
+                    Task {
+                        await model.updateConfig(["show_title_on_tray": value])
+                        await model.reload()
                     }
-                Toggle("Sync Child Items When Toggling Folders", isOn: $syncChildren)
-                    .onChange(of: syncChildren) { value in
-                        Task { await model.updateConfig(["multi_chose_folder_switch_all": value]) }
-                    }
+                })
+                Toggle("Sync Child Items When Toggling Folders", isOn: $syncChildren.onSet { value in
+                    Task { await model.updateConfig(["multi_chose_folder_switch_all": value]) }
+                })
                 Text("When enabled, toggling a folder also toggles its child items; child items inside single-choice folders are not toggled in bulk.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section {
-                Toggle("Tray Icon Shortcut", isOn: $trayShortcut)
-                    .onChange(of: trayShortcut) { value in
-                        Task { await model.savePreference(["tray_mini_window": value]) }
-                    }
-                Text("When on, clicking the menu bar icon opens a small window. When off, it opens a menu.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("System Hosts Version History") {
-                Toggle("Record history", isOn: $historyOn)
-                    .onChange(of: historyOn) { value in
-                        guard loaded else { return }
-                        Task { await model.updateConfig(["history_enabled": value]) }
-                    }
+                Toggle("Record history", isOn: $historyOn.onSet { value in
+                    Task { await model.updateConfig(["history_enabled": value]) }
+                })
                 Picker("Maximum Number of Records", selection: Binding(
                     get: { historyLimit },
                     set: { value in Task { await changeHistoryLimit(to: value) } }
@@ -545,21 +529,18 @@ private struct AdvancedTab: View {
             }
 
             Section("Make SwitchHosts Better!") {
-                Toggle("Yes, Submit Anonymized Usage Data", isOn: $sendUsageData)
-                    .onChange(of: sendUsageData) { value in
-                        Task { await model.updateConfig(["send_usage_data": value]) }
-                    }
+                Toggle("Yes, Submit Anonymized Usage Data", isOn: $sendUsageData.onSet { value in
+                    Task { await model.updateConfig(["send_usage_data": value]) }
+                })
                 Text("Would you like to help us improve SwitchHosts by periodically submitting anonymous usage data?")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section("Local HTTP API") {
-                Toggle("Enable the local HTTP API", isOn: $httpOn)
-                    .onChange(of: httpOn) { _ in applyHTTPAPI() }
-                Toggle("Only accept connections from this Mac", isOn: $httpOnlyLocal)
+                Toggle("Enable the local HTTP API", isOn: $httpOn.onSet { _ in applyHTTPAPI() })
+                Toggle("Only accept connections from this Mac", isOn: $httpOnlyLocal.onSet { _ in applyHTTPAPI() })
                     .disabled(!httpOn)
-                    .onChange(of: httpOnlyLocal) { _ in applyHTTPAPI() }
                 TextField("Port", text: $httpPort)
                     .disabled(!httpOn)
                     .onSubmit(applyHTTPAPI)
@@ -601,6 +582,11 @@ private struct AdvancedTab: View {
         }
         .formStyle(.grouped)
         .task { await load() }
+        // Text fields commit on Return; leaving the tab keeps what was typed too.
+        .onDisappear {
+            if dnsCustomURL != savedDNSTemplate { saveDNSTemplate() }
+            if httpOn, httpPort != savedHTTPPort { applyHTTPAPI() }
+        }
     }
 
     /// Pick a folder, show what it means, then switch and restart. Copying is optional.
@@ -660,20 +646,21 @@ private struct AdvancedTab: View {
         let config = await model.loadConfig()
         dnsProvider = config["dns_provider"] as? String ?? "alidns"
         dnsCustomURL = config["dns_custom_url"] as? String ?? ""
+        savedDNSTemplate = dnsCustomURL
         refreshOnLaunch = config["refresh_remote_hosts_on_startup"] as? Bool ?? false
         removeDuplicates = config["remove_duplicate_records"] as? Bool ?? false
         showTitleOnTray = config["show_title_on_tray"] as? Bool ?? false
         syncChildren = config["multi_chose_folder_switch_all"] as? Bool ?? false
         sendUsageData = config["send_usage_data"] as? Bool ?? false
-        trayShortcut = config["tray_mini_window"] as? Bool ?? true
         httpOn = config["http_api_on"] as? Bool ?? false
         httpOnlyLocal = config["http_api_only_local"] as? Bool ?? true
         httpPort = String(config["http_api_port"] as? Int ?? 50761)
+        savedHTTPPort = httpPort
         let history = await model.historySettings()
         historyOn = history.enabled
         historyLimit = history.limit
         loaded = true
-        httpStatus = httpOn ? await model.configureHTTPAPI(on: true, port: Int(httpPort) ?? 50761, onlyLocal: httpOnlyLocal) : ""
+        httpStatus = httpOn ? await model.httpAPIStatus() : ""
         dataDir = await model.dataDirStatus()
     }
 
@@ -689,13 +676,16 @@ private struct AdvancedTab: View {
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             await model.setHistoryLimit(value, confirmation: preview)
         }
-        historyLimit = value
+        // Show what the core kept: a confirmation can be refused when the
+        // history changed meanwhile, and a failed save keeps the old limit.
+        historyLimit = await model.historySettings().limit
         await model.loadHistory()
     }
 
     /// Saves the DoH template when it contains the `{domain}` placeholder.
     private func saveDNSTemplate() {
         guard loaded, dnsCustomURL.isEmpty || dnsCustomURL.contains("{domain}") else { return }
+        savedDNSTemplate = dnsCustomURL
         Task { await model.updateConfig(["dns_custom_url": dnsCustomURL]) }
     }
 
@@ -708,6 +698,7 @@ private struct AdvancedTab: View {
                 httpStatus = String(localized: "Port must be between 1 and 65535.")
                 return
             }
+            savedHTTPPort = httpPort
             httpStatus = await model.configureHTTPAPI(on: httpOn, port: port, onlyLocal: httpOnlyLocal)
         }
     }

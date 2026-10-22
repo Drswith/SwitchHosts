@@ -108,12 +108,8 @@ final class TreeDocumentTests: XCTestCase {
         XCTAssertFalse(TreeDocument.setRefreshInterval("a", seconds: 60, in: &tree))
     }
 
-    func testCollapseAndChoiceModeApplyToFoldersOnly() {
+    func testChoiceModeAppliesToFoldersOnly() {
         var tree = sample()
-        XCTAssertTrue(TreeDocument.setCollapsed("f", true, in: &tree))
-        XCTAssertEqual(TreeDocument.find("f", in: tree)?.node["is_collapsed"] as? Bool, true)
-        XCTAssertFalse(TreeDocument.setCollapsed("a", true, in: &tree), "a local entry cannot collapse")
-
         XCTAssertTrue(TreeDocument.setFolderMode("f", mode: 1, in: &tree))
         XCTAssertEqual(TreeDocument.find("f", in: tree)?.node["folder_mode"] as? Int, 1)
         XCTAssertFalse(TreeDocument.setFolderMode("b", mode: 1, in: &tree))

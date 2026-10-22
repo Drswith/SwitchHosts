@@ -122,13 +122,15 @@ final class AutosaveTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: home.entryFile("bad")), unreadable)
     }
 
-    func testOverlappingSelectionsShowTheSelectedEntrysOwnText() async {
-        async let first: Void = model.select("a")
-        async let second: Void = model.select("b")
-        _ = await (first, second)
-        let texts = ["a": "10.0.0.1 a.example.test\n", "b": "10.0.0.2 b.example.test\n"]
-        XCTAssertEqual(model.content, model.selection.flatMap { texts[$0] })
-        XCTAssertEqual(model.contentID, model.selection)
+    /// A load that a newer selection overtook is dropped, even for the entry
+    /// now selected, so a slow read can never land in the editor late.
+    func testALoadOvertakenByANewerSelectionIsDropped() async {
+        await model.select("a")
+        let overtaken = model.beginContentLoad()
+        await model.select("b")
+        XCTAssertFalse(model.finishContentLoad(overtaken, of: "b", text: "stale text"))
+        XCTAssertEqual(model.content, "10.0.0.2 b.example.test\n")
+        XCTAssertEqual(model.contentID, "b")
     }
 
     func testTheEnabledOrderFollowsTheTreeIncludingFolders() {

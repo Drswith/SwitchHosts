@@ -109,7 +109,7 @@ final class RenderTests: XCTestCase {
         let model = HostsModel()
         await model.start()
         try await Task.sleep(nanoseconds: 200_000_000)
-        try render(TrayMenu(model: model), size: NSSize(width: 240, height: 260), name: "tray-compact")
+        try render(MenuBarView(model: model), size: NSSize(width: 240, height: 260), name: "tray-compact")
     }
 
     func testRenderPreferencesGeneralTab() async throws {
@@ -128,7 +128,7 @@ final class ImageRendererTests: XCTestCase {
             throw XCTSkip("SWH_SHOTS_DIR is not set")
         }
         let model = HostsModel()
-        let renderer = ImageRenderer(content: TrayMenu(model: model).frame(width: 240, height: 200))
+        let renderer = ImageRenderer(content: MenuBarView(model: model).frame(width: 240, height: 200))
         renderer.scale = 2
         let image = try XCTUnwrap(renderer.nsImage)
         let tiff = try XCTUnwrap(image.tiffRepresentation)

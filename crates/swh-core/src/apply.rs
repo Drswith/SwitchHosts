@@ -95,16 +95,18 @@ pub async fn apply_aggregated_content(
 ///
 /// Shares the toggle's serialization and recovery bookkeeping: it waits for
 /// an apply in progress, refuses while an earlier application is unresolved,
-/// and never writes with an unset write mode.
+/// and never writes with an unset write mode. With `resolve_pending`, it is
+/// the way out of that unresolved state (upstream's "apply again" notice):
+/// it applies the saved selection anyway, and a verified write clears it.
 pub async fn reapply_saved_selection(
     state: &AppState,
     events: &dyn EventSink,
     changed: Option<&[String]>,
+    resolve_pending: bool,
 ) -> Result<bool, ToggleError> {
     let recovery = &state.application_recovery;
     let _apply_guard = recovery.lock_apply().await;
     state.require_data_dir_usable()?;
-    ensure_toggle_allowed(recovery)?;
     let (write_mode, remove_duplicate) = {
         let config = state.config.lock().expect("config mutex poisoned");
         (config.write_mode.clone(), config.remove_duplicate_records)
@@ -127,6 +129,11 @@ pub async fn reapply_saved_selection(
         }
         hosts_apply::aggregate_selected_content(&saved.root, &state.paths, remove_duplicate)?
     };
+    // Checked only once there is something to write, so edits to entries that
+    // are off never report the unresolved state.
+    if !resolve_pending {
+        ensure_toggle_allowed(recovery)?;
+    }
 
     recovery.begin();
     let outcome = match apply_aggregated_content(state, events, &content).await {
@@ -182,32 +189,37 @@ mod tests {
         list.iter().map(|id| id.to_string()).collect()
     }
 
+    // Each test leaves an earlier application unresolved, so a check that
+    // stopped working fails the test at the recovery refusal and never
+    // reaches the real system file.
+
     #[tokio::test]
     async fn changes_to_entries_that_are_off_write_nothing() {
         let state = state_with_entry(false);
-        let applied = reapply_saved_selection(&state, &NoopEvents, Some(&ids(&["a", "missing"])))
+        state.application_recovery.begin();
+        let changed = ids(&["a", "missing"]);
+        let applied = reapply_saved_selection(&state, &NoopEvents, Some(&changed), false)
             .await
             .unwrap();
         assert!(!applied);
-        assert!(!state.application_recovery.is_pending());
     }
 
     #[tokio::test]
     async fn an_unset_write_mode_writes_nothing() {
         let state = state_with_entry(true);
         state.config.lock().unwrap().write_mode.clear();
-        let applied = reapply_saved_selection(&state, &NoopEvents, Some(&ids(&["a"])))
+        state.application_recovery.begin();
+        let applied = reapply_saved_selection(&state, &NoopEvents, Some(&ids(&["a"])), false)
             .await
             .unwrap();
         assert!(!applied);
-        assert!(!state.application_recovery.is_pending());
     }
 
     #[tokio::test]
     async fn a_pending_application_is_refused_before_any_write() {
         let state = state_with_entry(true);
         state.application_recovery.begin();
-        let result = reapply_saved_selection(&state, &NoopEvents, Some(&ids(&["a"]))).await;
+        let result = reapply_saved_selection(&state, &NoopEvents, Some(&ids(&["a"])), false).await;
         assert!(matches!(result, Err(ToggleError::RecoveryRequired)));
     }
 }

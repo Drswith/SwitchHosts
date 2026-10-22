@@ -30,6 +30,8 @@ struct HighlightingEditor: NSViewRepresentable {
         let scroll = NSTextView.scrollableTextView()
         guard let textView = scroll.documentView as? NSTextView else { return scroll }
         textView.delegate = context.coordinator
+        // The storage's delegate colours each edit's lines, including the text set below.
+        textView.textStorage?.delegate = context.coordinator
         textView.isRichText = false
         textView.allowsUndo = true
         textView.font = Self.font
@@ -48,7 +50,6 @@ struct HighlightingEditor: NSViewRepresentable {
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isEditable = !readOnly
         textView.string = text
-        Self.highlight(textView)
         context.coordinator.attach(textView)
         scroll.drawsBackground = true
         scroll.backgroundColor = .textBackgroundColor
@@ -70,61 +71,67 @@ struct HighlightingEditor: NSViewRepresentable {
             // The undo steps recorded so far belong to the replaced text (often
             // another entry); applied to this one they would corrupt it.
             textView.undoManager?.removeAllActions()
-            Self.highlight(textView)
             // Setting the string does not post a change notification, so the gutter is redrawn here.
             (scroll.verticalRulerView as? LineNumberRuler)?.needsDisplay = true
         }
         if let reveal, reveal.token != context.coordinator.revealToken {
             context.coordinator.revealToken = reveal.token
-            Self.select(reveal.range, in: textView)
+            context.coordinator.revealMark = Self.select(reveal.range, in: textView)
         }
     }
 
     /// Selects `range` (UTF-16 offsets, as the core reports them), scrolls to it,
-    /// and moves focus to the editor so the selection is visible.
-    private static func select(_ range: NSRange, in textView: NSTextView) {
+    /// and moves focus to the editor so the selection is visible. Returns the
+    /// marked range, which the next edit clears.
+    private static func select(_ range: NSRange, in textView: NSTextView) -> NSRange {
         let length = (textView.string as NSString).length
         let start = min(max(range.location, 0), length)
         let selection = NSRange(location: start, length: min(max(range.length, 0), length - start))
         textView.setSelectedRange(selection)
         textView.scrollRangeToVisible(selection)
-        // Mark the match too; the mark goes with the next edit, which re-colours the text.
+        // Mark the match too; the next edit clears the mark.
         textView.textStorage?.addAttribute(.backgroundColor, value: Brand.findHighlight, range: selection)
         DispatchQueue.main.async {
             textView.window?.makeFirstResponder(textView)
         }
+        return selection
     }
 
     /// Re-applies the colours for the whole document.
     static func highlight(_ textView: NSTextView) {
         guard let storage = textView.textStorage else { return }
-        let whole = NSRange(location: 0, length: storage.length)
         storage.beginEditing()
+        colour(storage, in: NSRange(location: 0, length: storage.length))
+        storage.endEditing()
+    }
+
+    /// Colours the whole lines in `range`. Only attributes change, so it can
+    /// run while the storage processes an edit.
+    static func colour(_ storage: NSTextStorage, in range: NSRange) {
         storage.setAttributes([
             .font: font,
             .foregroundColor: NSColor.labelColor,
             .paragraphStyle: paragraph,
-        ], range: whole)
+        ], range: range)
 
         let source = storage.string as NSString
         // Whole-line comments.
-        commentPattern.enumerateMatches(in: storage.string, range: whole) { match, _, _ in
+        commentPattern.enumerateMatches(in: storage.string, range: range) { match, _, _ in
             guard let range = match?.range else { return }
             storage.addAttribute(.foregroundColor, value: Brand.comment, range: range)
         }
         // The START and END lines around the block SwitchHosts writes.
-        markerPattern.enumerateMatches(in: storage.string, range: whole) { match, _, _ in
+        markerPattern.enumerateMatches(in: storage.string, range: range) { match, _, _ in
             guard let range = match?.range else { return }
             storage.addAttribute(.foregroundColor, value: Brand.accent, range: range)
         }
         // The address at the start of an entry.
-        addressPattern.enumerateMatches(in: storage.string, range: whole) { match, _, _ in
+        addressPattern.enumerateMatches(in: storage.string, range: range) { match, _, _ in
             guard let range = match?.range(at: 1), range.location != NSNotFound else { return }
             if source.substring(with: range).isEmpty == false {
                 storage.addAttribute(.foregroundColor, value: Brand.ip, range: range)
             }
         }
-        storage.endEditing()
     }
 
     /// The editor's text: 13 pt monospaced with roomy lines, as the Tauri editor has.
@@ -176,9 +183,11 @@ struct HighlightingEditor: NSViewRepresentable {
         return "# " + line
     }
 
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    final class Coordinator: NSObject, NSTextViewDelegate, NSTextStorageDelegate {
         var parent: HighlightingEditor
         var revealToken: UUID?
+        /// Where a find result is marked, cleared by the next edit.
+        var revealMark: NSRange?
         /// Waits for typing to stop before calling `onPause`.
         let pause = Debouncer(delay: HighlightingEditor.pauseDelay)
         private weak var textView: NSTextView?
@@ -210,11 +219,27 @@ struct HighlightingEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
-            HighlightingEditor.highlight(textView)
             guard parent.onPause != nil else { return }
             pause.schedule { [weak self, weak textView] in
                 guard let self, let textView else { return }
                 self.parent.onPause?(textView.string)
+            }
+        }
+
+        /// Colours only the lines an edit touched, so typing in a long entry
+        /// does not re-colour (and re-lay out) the whole document.
+        func textStorage(
+            _ storage: NSTextStorage,
+            didProcessEditing editedMask: NSTextStorageEditActions,
+            range editedRange: NSRange,
+            changeInLength delta: Int
+        ) {
+            guard editedMask.contains(.editedCharacters) else { return }
+            let text = storage.string as NSString
+            HighlightingEditor.colour(storage, in: text.lineRange(for: editedRange))
+            if let mark = revealMark {
+                revealMark = nil
+                storage.removeAttribute(.backgroundColor, range: NSIntersectionRange(mark, NSRange(location: 0, length: text.length)))
             }
         }
     }
@@ -284,20 +309,26 @@ final class LineNumberRuler: NSRulerView {
         let font = editor.font ?? HighlightingEditor.font
         let descent = layoutManager.defaultLineHeight(for: font) - layoutManager.defaultBaselineOffset(for: font)
         let visibleGlyphs = layoutManager.glyphRange(forBoundingRect: editor.visibleRect, in: container)
+        // Newlines are counted once up to the first visible character, then
+        // only across the visible text, so a redraw does not rescan the document.
+        var counted = min(layoutManager.characterIndexForGlyph(at: visibleGlyphs.location), text.length)
+        var newlines = Self.newlineCount(in: text, NSRange(location: 0, length: counted))
         layoutManager.enumerateLineFragments(forGlyphRange: visibleGlyphs) { fragment, _, _, glyphRange, _ in
             let characters = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
             let start = characters.location
             let isLineStart = start == 0 || (start <= text.length && text.character(at: start - 1) == 10)
-            guard isLineStart else { return }
-            let number = 1 + Self.newlineCount(in: text.substring(to: start))
-            self.draw(number, baseline: origin.y + fragment.maxY - descent, attributes: attributes)
+            guard isLineStart, start >= counted else { return }
+            newlines += Self.newlineCount(in: text, NSRange(location: counted, length: start - counted))
+            counted = start
+            self.draw(1 + newlines, baseline: origin.y + fragment.maxY - descent, attributes: attributes)
         }
         // The empty line after a final newline has no fragment of its own; number
         // it too, so the gutter counts the same lines as the detail header.
         let extra = layoutManager.extraLineFragmentRect
         if text.length > 0, text.character(at: text.length - 1) == 10, extra.height > 0,
            extra.intersects(editor.visibleRect) {
-            draw(1 + Self.newlineCount(in: editor.string), baseline: origin.y + extra.maxY - descent, attributes: attributes)
+            newlines += Self.newlineCount(in: text, NSRange(location: counted, length: text.length - counted))
+            draw(1 + newlines, baseline: origin.y + extra.maxY - descent, attributes: attributes)
         }
     }
 
@@ -308,8 +339,21 @@ final class LineNumberRuler: NSRulerView {
         label.draw(at: NSPoint(x: ruleThickness - size.width - 14, y: baseline - numberFont.ascender), withAttributes: attributes)
     }
 
-    private static func newlineCount(in text: String) -> Int {
-        text.reduce(0) { $1 == "\n" ? $0 + 1 : $0 }
+    /// Line feeds in `range`, counted on UTF-16 units so "\r\n" counts once.
+    static func newlineCount(in text: NSString, _ range: NSRange) -> Int {
+        var count = 0
+        var buffer = [unichar](repeating: 0, count: 4096)
+        var location = range.location
+        let end = range.location + range.length
+        while location < end {
+            let length = min(buffer.count, end - location)
+            text.getCharacters(&buffer, range: NSRange(location: location, length: length))
+            for index in 0..<length where buffer[index] == 10 {
+                count += 1
+            }
+            location += length
+        }
+        return count
     }
 }
 
@@ -323,9 +367,6 @@ final class Debouncer {
     init(delay: TimeInterval) {
         self.delay = delay
     }
-
-    /// Whether an action is waiting to run.
-    var isPending: Bool { pending != nil }
 
     func schedule(_ action: @escaping () -> Void) {
         pending?.cancel()
@@ -342,13 +383,5 @@ final class Debouncer {
     func cancel() {
         pending?.cancel()
         pending = nil
-    }
-
-    /// Runs the waiting action now, if there is one.
-    func flush() {
-        guard let item = pending else { return }
-        pending = nil
-        item.perform()
-        item.cancel()
     }
 }

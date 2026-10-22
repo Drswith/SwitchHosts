@@ -30,7 +30,7 @@
   - `storage` 与 `hosts_apply` 直接挂在 crate 根，使上游两个按完整路径重跑测试二进制的测试（`storage::transaction::tests::…`、`hosts_apply::history::tests::…`）在 `swh-core` 中同样通过。
 - **fork 自有**：与 Tauri 耦合的逻辑（命令、托管状态、事件）无法原位编译，只能在 `crates/swh-core/src` 中重新实现，不依赖 Tauri。上游改动需要手动移植：
   - `api.rs`、`apply.rs`（来自 `commands.rs`）、`refresh.rs`、`find.rs`、`events.rs`
-  - `toggle.rs`、`toggle/tests.rs`（来自 `http_api/toggle.rs`）
+  - `toggle.rs`（来自 `http_api/toggle.rs`；它的测试 `http_api/toggle/tests.rs` 用 `#[path]` 原位编译）
   - `http_api/{mod,routes,server}.rs`（来自 `http_api.rs`、`http_api/server.rs`）
   - `bootstrap.rs`：`AppState::bootstrap_at`，即 `AppState::bootstrap` 的显式数据根版本，作为 fork crate 中的 inherent impl 实现，因此 `storage/mod.rs` 不改动
   - `extra_tests.rs`：为上游模块补充的测试（`http.rs` 的代理路由、`storage/config.rs` 的语言）

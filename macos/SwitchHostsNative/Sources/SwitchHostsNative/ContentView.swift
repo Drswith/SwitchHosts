@@ -36,8 +36,8 @@ struct ContentView: View {
         .sheet(item: $model.pendingImport) { pending in
             ImportSheet(
                 pending: pending,
-                onCommit: { mode in Task { await model.commitImport(mode: mode) } },
-                onCancel: { Task { await model.cancelImport() } }
+                onCommit: { mode in Task { await model.commitImport(pending, mode: mode) } },
+                onCancel: { Task { await model.cancelImport(pending) } }
             )
         }
         .overlay(alignment: .bottom) {
@@ -51,6 +51,14 @@ struct ContentView: View {
                         Button("Open Release Page") { NSWorkspace.shared.open(notice.url) }
                             .controlSize(.small)
                         DismissButton { model.updateNotice = nil }
+                    }
+                }
+                if model.recoveryPending {
+                    Banner(style: .error, message: String(localized: "The active hosts selection cannot be confirmed because system hosts changed or could not be read. Reapply saved settings before editing.")) {
+                        Button("Reapply saved settings") {
+                            Task { await model.resolveRecovery() }
+                        }
+                        .controlSize(.small)
                     }
                 }
                 if let message = model.errorMessage {
@@ -247,7 +255,7 @@ private struct SidebarDragAndDrop: ViewModifier {
                     model.draggingID = id
                     return TreeDragPayload.provider(for: id)
                 }
-                .onDrop(of: [.plainText], delegate: TreeDropDelegate(
+                .onDrop(of: [TreeDragPayload.type], delegate: TreeDropDelegate(
                     placement: $placement,
                     height: 28,
                     where: { y, height in
@@ -270,7 +278,7 @@ private struct SidebarDragAndDrop: ViewModifier {
                 ))
         case .all:
             content
-                .onDrop(of: [.plainText], delegate: TreeDropDelegate(
+                .onDrop(of: [TreeDragPayload.type], delegate: TreeDropDelegate(
                     placement: $placement,
                     height: 28,
                     where: { _, _ in .inside },
@@ -555,13 +563,18 @@ private struct EntryRow: View {
             model.draggingID = node.id
             return TreeDragPayload.provider(for: node.id)
         }
-        .onDrop(of: [.plainText], delegate: TreeDropDelegate(
+        .onDrop(of: [TreeDragPayload.type], delegate: TreeDropDelegate(
             placement: $dropPlacement,
             height: height,
             where: { y, height in
                 // Views chosen by state cannot be put in order, and nothing goes
                 // into its own subtree.
                 guard model.sidebar.allowsReordering, model.canDrop(on: node.id) else { return nil }
+                // All Entries hides folders, so an entry is only put in order among its own siblings there.
+                if model.sidebar == .all,
+                   model.parentFolder(of: node.id)?.id != model.parentFolder(of: model.draggingID ?? "")?.id {
+                    return nil
+                }
                 return y < height / 2 ? .before : .after
             },
             perform: { dragged, placement in
@@ -663,8 +676,12 @@ private struct EntryActions: View {
             Button("Refresh") { Task { await model.refreshRemote(node.id) } }
         }
         Divider()
-        Button("Move Up") { Task { await model.move(node.id, by: -1) } }
-        Button("Move Down") { Task { await model.move(node.id, by: 1) } }
+        // Only a folder view lists siblings; other views hide folders, so a
+        // sibling move there would jump over rows the user cannot see.
+        if case .folder = model.sidebar {
+            Button("Move Up") { Task { await model.move(node.id, by: -1) } }
+            Button("Move Down") { Task { await model.move(node.id, by: 1) } }
+        }
         Menu("Move to Folder") {
             Button("Top Level") { Task { await model.move(node.id, toFolder: nil) } }
             Divider()
@@ -694,7 +711,7 @@ private struct TreeDropDelegate: DropDelegate {
     let perform: @MainActor (_ dragged: String, _ placement: TreeDocument.Placement) async -> Void
 
     func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [.plainText])
+        info.hasItemsConforming(to: [TreeDragPayload.type])
     }
 
     func dropEntered(info: DropInfo) {
@@ -715,7 +732,7 @@ private struct TreeDropDelegate: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         defer { placement = nil }
         guard let target = `where`(info.location.y, height),
-              let provider = info.itemProviders(for: [.plainText]).first else { return false }
+              let provider = info.itemProviders(for: [TreeDragPayload.type]).first else { return false }
         let perform = perform
         Task { @MainActor in
             guard let dragged = await TreeDragPayload.id(from: provider) else { return }
@@ -1083,6 +1100,17 @@ private struct DetailToolbar: ToolbarContent {
 
 /// Asks how to apply a staged backup: append it, replace the tree, or cancel.
 private struct ImportSheet: View {
+    /// Asks before a replace, which deletes the current entries that are not in the trash.
+    static func confirmReplace() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = String(localized: "Replace the current entries?")
+        alert.informativeText = String(localized: "Entries that are not in the trash are deleted and cannot be restored.")
+        alert.addButton(withTitle: String(localized: "Replace"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     let pending: HostsModel.PendingImport
     let onCommit: (String) -> Void
     let onCancel: () -> Void
@@ -1104,11 +1132,12 @@ private struct ImportSheet: View {
                 onCommit("append")
                 dismiss()
             }
-            Button("Replace") {
+            // Replace deletes entries for good, so it takes a click and a confirmation, never Return.
+            Button("Replace", role: .destructive) {
+                guard Self.confirmReplace() else { return }
                 onCommit("replace")
                 dismiss()
             }
-            .keyboardShortcut(.defaultAction)
         }
     }
 }
@@ -1171,13 +1200,6 @@ private struct NoFocusRing: ViewModifier {
         } else {
             content
         }
-    }
-}
-
-/// A small grey "Read Only" tag, as 5.0.2 shows it.
-struct ReadOnlyBadge: View {
-    var body: some View {
-        Tag("Read Only")
     }
 }
 

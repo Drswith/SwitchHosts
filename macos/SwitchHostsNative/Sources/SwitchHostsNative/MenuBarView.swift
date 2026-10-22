@@ -20,23 +20,6 @@ struct MenuBarView: View {
     }
 }
 
-/// The compact list shown in the status item's window when the tray shortcut is off.
-struct TrayMenu: View {
-    @ObservedObject var model: HostsModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            TrayHeader(model: model)
-            Divider()
-            TrayEntries(model: model)
-            Divider()
-            TrayFooter(model: model)
-        }
-        .frame(width: 260)
-        .task { await model.reload() }
-    }
-}
-
 /// The app's icon and name at the top of the menu bar windows, how many
 /// entries are on, and a button that opens the main window.
 struct TrayHeader: View {
