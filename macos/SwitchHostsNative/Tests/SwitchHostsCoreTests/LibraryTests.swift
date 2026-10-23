@@ -119,4 +119,16 @@ final class LibraryTests: XCTestCase {
         XCTAssertEqual(LineNumberRuler.newlineCount(in: text, NSRange(location: 0, length: text.length)), 3)
         XCTAssertEqual(LineNumberRuler.newlineCount(in: text, NSRange(location: 3, length: 3)), 1)
     }
+
+    /// A refresh that just happened reads as now, never as "in 0 seconds"
+    /// (the core stores whole seconds, so it parses as slightly in the past).
+    func testAJustFinishedRefreshIsNotInTheFuture() {
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let now = Date()
+        let numeric = RelativeDateTimeFormatter()
+        numeric.unitsStyle = .full
+        XCTAssertNotEqual(Format.ago(stamp.string(from: now)), numeric.localizedString(for: now, relativeTo: now))
+    }
 }

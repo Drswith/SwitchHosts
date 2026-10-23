@@ -734,7 +734,12 @@ private struct TreeDropDelegate: DropDelegate {
         guard let target = `where`(info.location.y, height),
               let provider = info.itemProviders(for: [TreeDragPayload.type]).first else { return false }
         let perform = perform
+        let placement = $placement
         Task { @MainActor in
+            // SwiftUI sends one more dropUpdated after performDrop and no
+            // dropExited, which would leave the line drawn; clear it again
+            // once the drop has been handled.
+            defer { placement.wrappedValue = nil }
             guard let dragged = await TreeDragPayload.id(from: provider) else { return }
             await perform(dragged, target)
         }
@@ -1270,6 +1275,9 @@ enum Format {
     private static let relative: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full
+        // The core stores whole seconds, so a refresh just now parses as up to
+        // a second ago, which the numeric style words as "in 0 seconds".
+        formatter.dateTimeStyle = .named
         return formatter
     }()
 }
