@@ -87,39 +87,21 @@ public enum TreeDocument {
     /// `id` is missing or is not a remote entry.
     @discardableResult
     public static func setRemoteTarget(_ id: String, url: String?, domains: [String]?, in nodes: inout [Node]) -> Bool {
-        for index in nodes.indices {
-            if nodes[index]["id"] as? String == id {
-                guard nodes[index]["type"] as? String == "remote" else { return false }
-                applyTarget(url: url, domains: domains, to: &nodes[index])
-                return true
-            }
-            if var children = nodes[index]["children"] as? [Node] {
-                if setRemoteTarget(id, url: url, domains: domains, in: &children) {
-                    nodes[index]["children"] = children
-                    return true
-                }
-            }
+        mutate(id, in: &nodes) { node in
+            guard node["type"] as? String == "remote" else { return false }
+            applyTarget(url: url, domains: domains, to: &node)
+            return true
         }
-        return false
     }
 
     /// Sets how often a remote entry refreshes, in seconds (0 = manual).
     @discardableResult
     public static func setRefreshInterval(_ id: String, seconds: Int, in nodes: inout [Node]) -> Bool {
-        for index in nodes.indices {
-            if nodes[index]["id"] as? String == id {
-                guard nodes[index]["type"] as? String == "remote" else { return false }
-                nodes[index]["refresh_interval"] = seconds
-                return true
-            }
-            if var children = nodes[index]["children"] as? [Node] {
-                if setRefreshInterval(id, seconds: seconds, in: &children) {
-                    nodes[index]["children"] = children
-                    return true
-                }
-            }
+        mutate(id, in: &nodes) { node in
+            guard node["type"] as? String == "remote" else { return false }
+            node["refresh_interval"] = seconds
+            return true
         }
-        return false
     }
 
     private static func applyTarget(url: String?, domains: [String]?, to entry: inout Node) {
@@ -137,19 +119,10 @@ public enum TreeDocument {
     /// Changes the title of `id`. Returns false if it does not exist.
     @discardableResult
     public static func rename(_ id: String, to title: String, in nodes: inout [Node]) -> Bool {
-        for index in nodes.indices {
-            if nodes[index]["id"] as? String == id {
-                nodes[index]["title"] = title
-                return true
-            }
-            if var children = nodes[index]["children"] as? [Node] {
-                if rename(id, to: title, in: &children) {
-                    nodes[index]["children"] = children
-                    return true
-                }
-            }
+        mutate(id, in: &nodes) { node in
+            node["title"] = title
+            return true
         }
-        return false
     }
 
     /// Removes `id` from the tree. Returns false if it does not exist.
@@ -189,17 +162,6 @@ public enum TreeDocument {
             }
         }
         return false
-    }
-
-    /// Sets whether a folder is shown closed in the sidebar. Returns false if
-    /// `id` is missing or is not a folder.
-    @discardableResult
-    public static func setCollapsed(_ id: String, _ collapsed: Bool, in nodes: inout [Node]) -> Bool {
-        mutate(id, in: &nodes) { node in
-            guard node["type"] as? String == "folder" else { return false }
-            node["is_collapsed"] = collapsed
-            return true
-        }
     }
 
     /// Sets a folder's choice mode: 0 inherits the global mode, 1 allows one

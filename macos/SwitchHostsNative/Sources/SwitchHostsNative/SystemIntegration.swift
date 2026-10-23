@@ -40,7 +40,17 @@ enum AppTheme {
 /// Restarts the app: a new copy starts once this one has exited. Used after the
 /// data folder changes, because the core opens its folder only at launch.
 enum AppRelaunch {
-    static func restart() {
+    /// Set by `restart`; the new copy is started only once quitting is certain.
+    @MainActor static var requested = false
+
+    @MainActor static func restart() {
+        requested = true
+        NSApp.terminate(nil)
+    }
+
+    /// Starts a copy that waits for this process to exit. Called from
+    /// `applicationWillTerminate`, so a cancelled quit never leaves one behind.
+    static func launchReplacement() {
         let pid = ProcessInfo.processInfo.processIdentifier
         let bundle = Bundle.main.bundleURL.path.replacingOccurrences(of: "'", with: "'\\''")
         let script = "while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done; /usr/bin/open -n '\(bundle)'"
@@ -48,6 +58,5 @@ enum AppRelaunch {
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", script]
         try? process.run()
-        NSApp.terminate(nil)
     }
 }

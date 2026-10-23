@@ -17,10 +17,24 @@ struct FindSheet: View {
     @State private var replaceHistory: [String] = []
     @State private var status = ""
     @State private var searched = false
+    /// The search `results` came from. Replacing uses it, never what the
+    /// fields hold now, so only matches the user has seen are changed.
+    @State private var shownQuery: FindQuery?
 
     /// Matches that can be replaced: those in local entries.
     private var replaceableCount: Int {
         results.filter { !$0.isReadOnly }.reduce(0) { $0 + $1.count }
+    }
+
+    private var fieldQuery: FindQuery {
+        FindQuery(keyword: keyword, regexp: regexp, ignoreCase: ignoreCase)
+    }
+
+    /// Whether the results on screen belong to the search in the fields. As in
+    /// 5.0.2, changing the keyword or an option disables replacing until the
+    /// search runs again.
+    private var resultsAreCurrent: Bool {
+        !keyword.isEmpty && shownQuery == fieldQuery
     }
 
     var body: some View {
@@ -62,7 +76,7 @@ struct FindSheet: View {
                         ForEach(item.positions, id: \.start) { position in
                             ResultRow(
                                 position: position,
-                                canReplace: !keyword.isEmpty && !item.isReadOnly,
+                                canReplace: resultsAreCurrent && !item.isReadOnly,
                                 onShow: { Task { await model.show(item, position) } },
                                 onReplace: { replace(item, position) }
                             )
@@ -95,12 +109,13 @@ struct FindSheet: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Find", action: find)
                     .disabled(keyword.isEmpty)
+                // No Return shortcut: Return in the keyword field searches, and
+                // must never rewrite every entry.
                 Button(action: replaceAll) {
                     Text("Replace All") + Text(verbatim: replaceableCount > 0 ? " (\(replaceableCount))" : "")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(keyword.isEmpty || replaceableCount == 0)
-                .keyboardShortcut(.defaultAction)
+                .disabled(!resultsAreCurrent || replaceableCount == 0)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
@@ -125,36 +140,47 @@ struct FindSheet: View {
 
     private func find() {
         guard !keyword.isEmpty else { return }
+        let query = fieldQuery
         Task {
-            await model.recordFind(keyword: keyword, regexp: regexp, ignoreCase: ignoreCase)
+            await model.recordFind(keyword: query.keyword, regexp: query.regexp, ignoreCase: query.ignoreCase)
             keywordHistory = await model.findHistory()
-            results = await model.findMatches(keyword: keyword, regexp: regexp, ignoreCase: ignoreCase)
+            await search(query)
             searched = true
             updateStatus()
         }
     }
 
+    /// Runs `query` and shows its matches as the current results.
+    private func search(_ query: FindQuery) async {
+        results = await model.findMatches(keyword: query.keyword, regexp: query.regexp, ignoreCase: query.ignoreCase)
+        shownQuery = query
+    }
+
     private func replace(_ item: FindItem, _ position: FindPosition) {
+        guard resultsAreCurrent, let query = shownQuery else { return }
+        let text = replacement
         Task {
-            await model.recordReplace(replacement)
+            await model.recordReplace(text)
             replaceHistory = await model.replaceHistory()
-            _ = await model.replaceOne(item, position: position, replacement: replacement)
-            results = await model.findMatches(keyword: keyword, regexp: regexp, ignoreCase: ignoreCase)
+            _ = await model.replaceOne(item, position: position, replacement: text)
+            await search(query)
             updateStatus()
         }
     }
 
     private func replaceAll() {
+        guard resultsAreCurrent, replaceableCount > 0, let query = shownQuery else { return }
+        let text = replacement
         Task {
-            await model.recordReplace(replacement)
+            await model.recordReplace(text)
             replaceHistory = await model.replaceHistory()
             let replaced = await model.replaceAll(
-                keyword: keyword,
-                regexp: regexp,
-                ignoreCase: ignoreCase,
-                replacement: replacement
+                keyword: query.keyword,
+                regexp: query.regexp,
+                ignoreCase: query.ignoreCase,
+                replacement: text
             )
-            results = await model.findMatches(keyword: keyword, regexp: regexp, ignoreCase: ignoreCase)
+            await search(query)
             status = String(localized: "Replaced \(replaced).")
         }
     }
@@ -168,6 +194,13 @@ struct FindSheet: View {
             status += " " + String(localized: "(\(readOnly) read-only)")
         }
     }
+}
+
+/// A search as the core runs it: the keyword and its two options.
+private struct FindQuery: Equatable {
+    var keyword: String
+    var regexp: Bool
+    var ignoreCase: Bool
 }
 
 /// A rounded field with an icon in front and small buttons inside on the right.
@@ -256,7 +289,7 @@ private struct ResultHeader: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             if item.isReadOnly {
-                ReadOnlyBadge()
+                Tag("Read Only")
             }
         }
         .padding(.horizontal, 6)

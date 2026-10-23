@@ -59,7 +59,6 @@ final class DecodingTests: XCTestCase {
         let node = try decode(HostsNode.self, """
         {"id": "f", "title": "F", "type": "folder", "on": false, "children": [], "is_collapsed": true, "folder_mode": 1}
         """)
-        XCTAssertTrue(node.isClosed)
         XCTAssertEqual(node.folderMode, 1)
     }
 

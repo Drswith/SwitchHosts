@@ -235,5 +235,9 @@ impl std::fmt::Display for ToggleError {
     }
 }
 
+// Upstream's own tests, compiled in place; they only need `json!` here.
 #[cfg(test)]
+use serde_json::json;
+#[cfg(test)]
+#[path = "../../../src-tauri/src/http_api/toggle/tests.rs"]
 mod tests;

@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 
 use std::path::Path;
 
+use crate::apply;
 use crate::events::{EventSink, TRAY_TITLE_REFRESH};
 use crate::find::{self, FindOptions, FindReplaceOneArgs};
 use crate::hosts_apply;
@@ -20,7 +21,7 @@ use crate::storage::{
     manifest::{self, Manifest},
     transaction::{self, Target},
     tree_format::legacy_root_to_v5,
-    AppState, StorageError, Trashcan,
+    AppConfig, AppState, StorageError, Trashcan,
 };
 use crate::toggle;
 
@@ -60,13 +61,6 @@ pub fn get_list(state: &AppState) -> Result<Value, StorageError> {
     let _guard = state.lock_store()?;
     let m = load_manifest(state)?;
     Ok(Value::Array(m.root))
-}
-
-pub fn get_item_from_list(state: &AppState, args: &Args) -> Result<Value, StorageError> {
-    let _guard = state.lock_store()?;
-    let id = arg_str(args, 0, "id")?;
-    let m = load_manifest(state)?;
-    Ok(manifest::find_node(&m.root, id).unwrap_or(Value::Null))
 }
 
 /// Aggregate the content of the list the renderer passes in `args[0]`.
@@ -425,12 +419,6 @@ pub async fn import_url(state: &AppState, sessions: &Sessions, url: &str) -> Res
     Ok(json!(sessions.prepare(draft, name, &state.paths)?))
 }
 
-pub fn import_rebase(state: &AppState, sessions: &Sessions, token: &str) -> Result<Value, ImportError> {
-    state.require_data_dir_usable()?;
-    let _guard = state.lock_store()?;
-    Ok(json!(sessions.rebase(token, &state.paths)?))
-}
-
 pub fn import_discard(sessions: &Sessions, token: &str) {
     sessions.discard(token);
 }
@@ -726,20 +714,6 @@ pub fn find_add_history(state: &AppState, args: &Args) -> Result<Value, StorageE
     serde_json::to_value(all).map_err(|e| StorageError::serialize("find.json", e))
 }
 
-/// Replaces the whole keyword history. `args[0]` is an array of entries.
-pub fn find_set_history(state: &AppState, args: &Args) -> Result<Value, StorageError> {
-    state.require_data_dir_usable()?;
-    let items: Vec<find::FindHistoryEntry> = match args.first() {
-        Some(Value::Array(arr)) => arr
-            .iter()
-            .filter_map(|v| serde_json::from_value::<find::FindHistoryEntry>(v.clone()).ok())
-            .collect(),
-        _ => Vec::new(),
-    };
-    find::set_find_history(state, &items)?;
-    Ok(Value::Null)
-}
-
 /// Remembers a replacement text. `args[0]` is the text; returns the list.
 pub fn find_add_replace_history(state: &AppState, args: &Args) -> Result<Value, StorageError> {
     state.require_data_dir_usable()?;
@@ -748,34 +722,35 @@ pub fn find_add_replace_history(state: &AppState, args: &Args) -> Result<Value, 
     serde_json::to_value(all).map_err(|e| StorageError::serialize("replace.json", e))
 }
 
-/// Replaces the whole replacement-text history. `args[0]` is an array of strings.
-pub fn find_set_replace_history(state: &AppState, args: &Args) -> Result<Value, StorageError> {
+// ---- config writes -------------------------------------------------------
+
+/// Apply a partial preference update and persist it, as upstream's
+/// `config_update` does. Side effects (login item, Dock icon, the HTTP
+/// listener, theme) are the host's job; see `http_api_configure` for the
+/// listener.
+pub fn config_update(state: &AppState, patch: &Value) -> Result<Value, StorageError> {
     state.require_data_dir_usable()?;
-    let items: Vec<String> = match args.first() {
-        Some(Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
-        _ => Vec::new(),
-    };
-    find::set_replace_history(state, &items)?;
+    // Retention changes must use the preview/confirmation command.
+    if patch.get("history_limit").is_some() {
+        return Err(StorageError::InvalidConfigValue {
+            key: "history_limit".into(),
+            reason: "use update_apply_history_limit to confirm and apply retention changes".into(),
+        });
+    }
+    let _write = state.config_write_lock.lock().expect("config write mutex poisoned");
+    let mut next = state.config.lock().expect("config mutex poisoned").clone();
+    next.apply_partial(patch)?;
+    save_and_publish_config(state, next)?;
     Ok(Value::Null)
 }
 
-// ---- config writes -------------------------------------------------------
-
-/// Apply a partial preference update and persist it. The in-memory preference
-/// is rolled back if the save fails. Side effects (login item, Dock icon, the
-/// HTTP listener, theme) are the host's job; see `http_api_configure` for the
-/// listener.
-pub fn config_update(state: &AppState, patch: &Value) -> Result<Value, StorageError> {
-    let _write = state.config_write_lock.lock().expect("config write mutex poisoned");
-    let previous = state.config.lock().expect("config mutex poisoned").clone();
-    let mut next = previous.clone();
-    next.apply_partial(patch)?;
+/// Save `next` and only then make it the live config, so readers never see
+/// a value that was not stored. Callers hold `config_write_lock`.
+pub fn save_and_publish_config(state: &AppState, next: AppConfig) -> Result<(), StorageError> {
+    let _store = state.lock_store()?;
+    next.save(&state.paths.config_file)?;
     *state.config.lock().expect("config mutex poisoned") = next;
-    if let Err(error) = state.persist_config() {
-        *state.config.lock().expect("config mutex poisoned") = previous;
-        return Err(error);
-    }
-    Ok(Value::Null)
+    Ok(())
 }
 
 // ---- privileged helper ----------------------------------------------------
@@ -910,7 +885,6 @@ pub async fn dispatch(
     let result = match command {
         "version" => Ok(json!(env!("SWH_VERSION"))),
         "get_list" => get_list(state),
-        "get_item_from_list" => get_item_from_list(state, &args),
         "get_content_of_list" => get_content_of_list(state, args),
         "set_list" => set_list(state, args),
         "get_trashcan_list" => get_trashcan_list(state),
@@ -920,9 +894,7 @@ pub async fn dispatch(
         "find_get_history" => find::get_find_history(state).map(|all| json!(all)),
         "find_get_replace_history" => find::get_replace_history(state).map(|all| json!(all)),
         "find_add_history" => find_add_history(state, &args),
-        "find_set_history" => find_set_history(state, &args),
         "find_add_replace_history" => find_add_replace_history(state, &args),
-        "find_set_replace_history" => find_set_replace_history(state, &args),
         "get_apply_history" => get_apply_history(state),
         "delete_apply_history_item" => delete_apply_history_item(state, &args),
         "clear_apply_history" => clear_apply_history(state),
@@ -971,10 +943,6 @@ pub async fn dispatch(
             let url = arg_str(&args, 0, "url").map_err(|e| e.to_string())?;
             return import_url(state, sessions, url).await.map_err(|e| e.to_string());
         }
-        "import_rebase" => {
-            let token = arg_str(&args, 0, "id").map_err(|e| e.to_string())?;
-            return import_rebase(state, sessions, token).map_err(|e| e.to_string());
-        }
         "import_discard" => {
             let token = arg_str(&args, 0, "id").map_err(|e| e.to_string())?;
             import_discard(sessions, token);
@@ -991,6 +959,22 @@ pub async fn dispatch(
                 .map(|()| Value::Null)
                 .map_err(|e| e.to_string());
         }
+        // args[0]: the ids whose content changed, or null after a reorder.
+        // args[1]: true to resolve an unresolved application by applying again.
+        "reapply_saved_selection" => {
+            let resolve_pending = args.get(1).and_then(Value::as_bool).unwrap_or(false);
+            let changed: Option<Vec<String>> = match args.into_iter().next() {
+                None | Some(Value::Null) => None,
+                Some(ids) => Some(serde_json::from_value(ids).map_err(|_| {
+                    "reapply_saved_selection: args[0] must be an array of ids".to_string()
+                })?),
+            };
+            return apply::reapply_saved_selection(state, events, changed.as_deref(), resolve_pending)
+                .await
+                .map(|applied| json!(applied))
+                .map_err(|e| e.to_string());
+        }
+        "application_recovery_pending" => Ok(json!(state.application_recovery.is_pending())),
         other => return Err(format!("unknown command: {other}")),
     };
     result.map_err(|e| e.to_string())
@@ -1070,8 +1054,6 @@ mod history_tests {
             find_add_replace_history(&state, &vec![json!(value)]).unwrap();
         }
         assert_eq!(find::get_replace_history(&state).unwrap(), vec!["y", "x"]);
-        find_set_replace_history(&state, &vec![json!(["only"])]).unwrap();
-        assert_eq!(find::get_replace_history(&state).unwrap(), vec!["only"]);
     }
 
     #[test]
@@ -1085,8 +1067,6 @@ mod history_tests {
         assert_eq!(list.as_array().unwrap().len(), 2, "same keyword replaces the old entry");
         assert!(find_add_history(&state, &vec![json!(42)]).is_err());
         assert!(find_add_history(&state, &vec![]).is_err());
-        find_set_history(&state, &vec![json!([])]).unwrap();
-        assert!(find::get_find_history(&state).unwrap().is_empty());
     }
 
     #[test]
@@ -1126,6 +1106,15 @@ mod history_tests {
         assert_eq!(cmd_get_history_list(&state).unwrap().as_array().unwrap().len(), 1);
         cmd_clear_history(&state).unwrap();
         assert!(hosts_apply::cmd_runner::load(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_generic_config_patch_cannot_change_the_history_limit() {
+        let state = state();
+        assert!(config_update(&state, &json!({"history_limit": 1})).is_err());
+        assert_ne!(state.config.lock().unwrap().history_limit, 1);
+        config_update(&state, &json!({"theme": "dark"})).unwrap();
+        assert_eq!(state.config.lock().unwrap().theme, "dark");
     }
 
     #[test]

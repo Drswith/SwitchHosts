@@ -118,7 +118,6 @@ KEYS = {
     "Your hosts file is located at:": "your_hosts_file_is",
     "Follow System": "theme_system",
     "Language": "language",
-    "Tray Icon Shortcut": "tray_mini_window",
     "Make SwitchHosts Better!": "usage_data_title",
     "Yes, Submit Anonymized Usage Data": "usage_data_agree",
     "Would you like to help us improve SwitchHosts by periodically submitting anonymous usage data?": "usage_data_help",
@@ -155,12 +154,30 @@ KEYS = {
     "Show Dock Icon": "show_dock_icon",
     "Acknowledgements": "acknowledgement",
     "Source Code": "source_code",
+    "The active hosts selection cannot be confirmed because system hosts changed or could not be read. Reapply saved settings before editing.": "hosts_application_unknown",
+    "Reapply saved settings": "hosts_reapply_saved",
 }
 
 # Chinese strings the renderer dictionaries do not have yet. These are written
 # for this app and take precedence over the dictionary values. Other languages
 # fall back to English until they are translated.
 OVERRIDES = {
+    # The core reports import failures as codes; English needs text for them too.
+    "en": {
+        "invalid_data": "The backup file's content is not valid.",
+        "parse_error": "The backup file could not be read.",
+        "new_version": "The backup comes from a newer version. Update SwitchHosts first.",
+        "application_recovery": "SwitchHosts is recovering data. Try the import again later.",
+        "empty_import": "The backup has nothing to import.",
+        "missing_content": "The backup is missing the content of some entries.",
+        "duplicate_id": "The backup contains entries with the same ID.",
+        "invalid_reference": "A group in the backup lists an entry that does not exist.",
+        "cyclic_reference": "Groups in the backup include each other.",
+        "missing_dependency": "The selected items include entries that are not selected.",
+        "confirmation_required": "Replacing must be confirmed first.",
+        "invalid_v3_data": "The backup in the old format is not valid.",
+        "invalid_data_key": "The backup file has no data section.",
+    },
     "zh-Hans": {
         "Append below the managed block": "追加到托管区域之后",
         "Applying": "应用",
@@ -258,7 +275,6 @@ OVERRIDES = {
         "Use System Window Frame": "使用系统窗口框架",
         "The new language applies after SwitchHosts restarts.": "新语言将在 SwitchHosts 重新启动后生效。",
         "Restart Now": "立即重新启动",
-        "When on, clicking the menu bar icon opens a small window. When off, it opens a menu.": "开启时，点击菜单栏图标会打开小窗；关闭时打开菜单。",
         "Entry Info": "条目信息",
         "Type": "类型",
         "Status": "状态",
@@ -301,6 +317,17 @@ OVERRIDES = {
         "parse_error": "备份文件无法解析。",
         "new_version": "备份文件来自更新的版本，请先升级 SwitchHosts。",
         "application_recovery": "应用正在恢复数据，请稍后再导入。",
+        "empty_import": "备份中没有可导入的内容。",
+        "missing_content": "备份缺少部分条目的内容。",
+        "duplicate_id": "备份中有重复的条目 ID。",
+        "invalid_reference": "备份中的组合引用了不存在的条目。",
+        "cyclic_reference": "备份中的组合相互包含。",
+        "missing_dependency": "所选项目包含的条目未被选中。",
+        "confirmation_required": "替换前需要确认。",
+        "invalid_v3_data": "旧格式备份的内容无效。",
+        "invalid_data_key": "备份文件缺少数据部分。",
+        "Replace the current entries?": "要替换当前的全部条目吗？",
+        "Entries that are not in the trash are deleted and cannot be restored.": "不在回收站中的条目会被删除，且无法恢复。",
         "The local configuration changed. Preview it again before importing.": "本地配置已变化，请重新预览后再导入。",
         "This import preview is no longer available. Select the source again.": "该导入预览已失效，请重新选择来源。",
         "Invalid proxy settings. Check the proxy protocol, host and port.": "代理设置无效，请检查协议、主机和端口。",

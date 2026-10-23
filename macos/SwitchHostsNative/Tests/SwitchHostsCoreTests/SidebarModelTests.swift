@@ -107,6 +107,16 @@ final class SidebarModelTests: XCTestCase {
         XCTAssertEqual(model.selectedIDs, ["dev"])
     }
 
+    func testRowsHiddenBySearchAreLeftOutOfTheTrash() async throws {
+        let model = await startedModel()
+        await model.showSidebar(.all)
+        model.clickRow("env1", modifiers: .command)
+        try await waitUntil { model.selection == "env1" }
+        XCTAssertEqual(Set(model.trashableSelection), ["basic", "env1"])
+        model.listQuery = "env"
+        XCTAssertEqual(model.trashableSelection, ["env1"], "basic is hidden by the search")
+    }
+
     func testClickingAFolderRowOpensItsView() async throws {
         let model = await startedModel()
         // A folder view lists the folders nested in it; a click opens one.

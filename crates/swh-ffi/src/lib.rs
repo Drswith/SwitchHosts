@@ -251,42 +251,32 @@ fn invoke_inner(handle: *const SwhHandle, command: *const c_char, args_json: *co
     }
 }
 
-/// `http_api_configure(on, port, only_local)`. Persists the preference, then
-/// applies it to the listener. The in-memory preference is rolled back when
-/// the listener or the save fails.
+/// `http_api_configure(on, port, only_local)`. Reserves the listener, then
+/// saves the preference and publishes it, as upstream's config commit does:
+/// a failure leaves both the listener and the saved config as they were.
 fn http_api_configure(handle: &SwhHandle, args: &[Value]) -> Result<Value, String> {
     let on = args.first().and_then(Value::as_bool).ok_or("http_api_configure: args[0] must be a boolean")?;
-    let port = args
-        .get(1)
-        .and_then(Value::as_u64)
-        .and_then(|p| u16::try_from(p).ok())
-        .ok_or("http_api_configure: args[1] must be a port number")?;
-    let only_local = args.get(2).and_then(Value::as_bool).unwrap_or(true);
-
-    let previous = handle.state.config.lock().expect("config mutex poisoned").clone();
-    let mut next = previous.clone();
-    next.http_api_on = on;
-    next.http_api_port = port;
-    next.http_api_only_local = only_local;
-    *handle.state.config.lock().expect("config mutex poisoned") = next.clone();
+    let patch = json!({
+        "http_api_on": on,
+        "http_api_port": args.get(1).cloned().unwrap_or(Value::Null),
+        "http_api_only_local": args.get(2).and_then(Value::as_bool).unwrap_or(true),
+    });
+    handle.state.require_data_dir_usable().map_err(|e| e.to_string())?;
+    let _write = handle.state.config_write_lock.lock().expect("config write mutex poisoned");
+    let mut next = handle.state.config.lock().expect("config mutex poisoned").clone();
+    next.apply_partial(&patch).map_err(|e| e.to_string())?;
 
     let ctx = HttpContext {
         state: handle.state.clone(),
         events: handle.events.clone(),
         host: Arc::new(NoRenderer),
     };
-    let persist_state = handle.state.clone();
-    let persist = move || {
-        let config = persist_state.config.lock().expect("config mutex poisoned").clone();
-        config.save(&persist_state.paths.config_file)
-    };
-    match handle.http.configure(handle.runtime.handle(), ctx, &next, persist) {
-        Ok(()) => Ok(json!(handle.http.status())),
-        Err(error) => {
-            *handle.state.config.lock().expect("config mutex poisoned") = previous;
-            Err(error.to_string())
-        }
-    }
+    let persist = || api::save_and_publish_config(&handle.state, next.clone());
+    handle
+        .http
+        .configure(handle.runtime.handle(), ctx, &next, persist)
+        .map_err(|e| e.to_string())?;
+    Ok(json!(handle.http.status()))
 }
 
 fn parse_args(args_json: *const c_char) -> Result<Vec<Value>, String> {
@@ -472,6 +462,10 @@ mod tests {
             r#"[[{"id":"a","title":"A","type":"local","on":false}]]"#,
         );
         assert_eq!(saved["ok"], json!(true), "{saved}");
+
+        // Port 0 would bind a random port; the config's own check refuses it.
+        let zero = call(handle, "http_api_configure", "[true, 0, true]");
+        assert_eq!(zero["ok"], json!(false), "{zero}");
 
         let on = call(handle, "http_api_configure", &format!("[true, {port}, true]"));
         assert_eq!(on["ok"], json!(true), "{on}");

@@ -1,4 +1,5 @@
 import XCTest
+@testable import SwitchHostsCore
 @testable import SwitchHostsNative
 
 /// A HOME folder with seeded SwitchHosts data, so a `HostsModel` can start
@@ -54,7 +55,8 @@ final class AutosaveTests: XCTestCase {
             {"format": "switchhosts-data", "schemaVersion": 1, "root": [
               {"id": "a", "type": "local", "title": "A", "on": false},
               {"id": "b", "type": "local", "title": "B", "on": false},
-              {"id": "r", "type": "remote", "title": "R", "on": false, "url": "file:///nonexistent"}
+              {"id": "r", "type": "remote", "title": "R", "on": false, "url": "file:///nonexistent"},
+              {"id": "bad", "type": "local", "title": "Unreadable", "on": false}
             ]}
             """,
             contents: ["a": "10.0.0.1 a.example.test\n", "b": "10.0.0.2 b.example.test\n"]
@@ -103,6 +105,62 @@ final class AutosaveTests: XCTestCase {
         try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertEqual(home.savedText("a"), "10.0.0.1 a.example.test\n")
         XCTAssertTrue(model.isDirty)
+    }
+
+    func testTextLeftByAFailedLoadIsNotSavedIntoTheEntry() async throws {
+        // Not UTF-8, so the core cannot read it.
+        let unreadable = Data([0xFF, 0xFE, 0x00, 0xC3])
+        try unreadable.write(to: home.entryFile("bad"))
+        await model.select("a")
+        await model.select("bad")
+        XCTAssertEqual(model.selection, "bad")
+        XCTAssertEqual(model.content, "", "the previous entry's text is not shown as this one's")
+        XCTAssertNil(model.contentID)
+        XCTAssertNotNil(model.errorMessage)
+        model.content = "10.0.0.6 typed.example.test\n"
+        await model.flushAutosave()
+        XCTAssertEqual(try Data(contentsOf: home.entryFile("bad")), unreadable)
+    }
+
+    /// A load that a newer selection overtook is dropped, even for the entry
+    /// now selected, so a slow read can never land in the editor late.
+    func testALoadOvertakenByANewerSelectionIsDropped() async {
+        await model.select("a")
+        let overtaken = model.beginContentLoad()
+        await model.select("b")
+        XCTAssertFalse(model.finishContentLoad(overtaken, of: "b", text: "stale text"))
+        XCTAssertEqual(model.content, "10.0.0.2 b.example.test\n")
+        XCTAssertEqual(model.contentID, "b")
+    }
+
+    func testTheEnabledOrderFollowsTheTreeIncludingFolders() {
+        let tree: [[String: Any]] = [
+            ["id": "a", "on": true],
+            ["id": "f", "on": false, "children": [["id": "b", "on": true], ["id": "c", "on": false]]],
+            ["id": "d", "on": true],
+        ]
+        XCTAssertEqual(HostsModel.enabledOrder(in: tree), ["a", "b", "d"])
+        XCTAssertNotEqual(HostsModel.enabledOrder(in: [tree[2], tree[0], tree[1]]), ["a", "b", "d"],
+                          "moving an enabled entry changes the applied order")
+    }
+
+    func testContentEventsNameTheirEntries() {
+        let one = SwhEvent(name: "hosts_content_changed", payload: Data(#"{"_args": ["r1"]}"#.utf8))
+        let batch = SwhEvent(name: "hosts_content_changed_batch", payload: Data(#"{"_args": [["r1", "r2"]]}"#.utf8))
+        XCTAssertEqual(HostsModel.changedIDs(in: one), ["r1"])
+        XCTAssertEqual(HostsModel.changedIDs(in: batch), ["r1", "r2"])
+    }
+
+    func testLocalesFromEarlierNativeBuildsMapToThe502Names() {
+        XCTAssertEqual(HostsModel.legacyLocales["zh_CN"], "zh")
+        XCTAssertEqual(HostsModel.legacyLocales["en_US"], "en")
+        XCTAssertNil(HostsModel.legacyLocales["zh"], "values 5.0.2 reads are left alone")
+    }
+
+    func testAnErrorReportedBeforeAReloadStaysShown() async {
+        model.errorMessage = "toggle failed"
+        await model.reload()
+        XCTAssertEqual(model.errorMessage, "toggle failed")
     }
 
     func testReadOnlyEntriesAreNotWritten() async {

@@ -35,22 +35,25 @@ final class SwitchHostsUITests: XCTestCase {
         if let home { try? FileManager.default.removeItem(at: home) }
     }
 
-    func testTheWindowListsTheSeededEntries() throws {
-        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 20), "the main window opens")
-        let outline = app.outlines.firstMatch
-        XCTAssertTrue(outline.waitForExistence(timeout: 10), "the sidebar is present")
-        // System Hosts, the top-level entries, and the folder's children.
-        XCTAssertGreaterThanOrEqual(outline.outlineRows.count, 5)
-        XCTAssertTrue(app.staticTexts["团队环境"].exists, "the folder is listed")
+    /// An element whose accessibility label starts with `title`. Sidebar rows
+    /// combine their title and count ("团队环境, 2") into one label.
+    private func element(titled title: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", title)).firstMatch
     }
 
-    func testSelectingAFolderShowsItsChoiceMode() throws {
+    func testTheSidebarListsTheSeededFolder() throws {
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 20), "the main window opens")
+        XCTAssertTrue(element(titled: "团队环境").waitForExistence(timeout: 10), "the folder is in the sidebar")
+    }
+
+    func testSelectingAFolderListsItsEntriesAndChoiceMode() throws {
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 20))
-        let folder = app.staticTexts["团队环境"]
+        let folder = element(titled: "团队环境")
         XCTAssertTrue(folder.waitForExistence(timeout: 10))
         folder.click()
-        // The folder pane has the three-way choice mode control.
-        XCTAssertTrue(app.segmentedControls.firstMatch.waitForExistence(timeout: 10), "the choice mode control appears")
+        XCTAssertTrue(element(titled: "开发环境").waitForExistence(timeout: 10), "the folder's entries are listed")
+        // The folder's choice mode is a pop-up menu in the toolbar.
+        XCTAssertTrue(app.popUpButtons.firstMatch.waitForExistence(timeout: 10), "the choice mode control appears")
     }
 
     func testCommandCommaOpensThePreferencesWindow() throws {
@@ -70,7 +73,7 @@ final class SwitchHostsUITests: XCTestCase {
         let manifest = """
         {"format": "switchhosts-data", "schemaVersion": 1, "root": [
           {"id": "web", "type": "local", "title": "前端站点", "on": false},
-          {"id": "team", "type": "folder", "title": "团队环境", "on": false, "folder": {"mode": 0}, "children": [
+          {"id": "team", "type": "folder", "title": "团队环境", "on": false, "folder_mode": 0, "children": [
             {"id": "dev", "type": "local", "title": "开发环境", "on": false},
             {"id": "api", "type": "local", "title": "API 服务", "on": false}
           ]},

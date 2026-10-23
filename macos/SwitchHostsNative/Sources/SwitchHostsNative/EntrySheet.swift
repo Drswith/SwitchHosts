@@ -143,7 +143,8 @@ struct EntrySheet: View {
             if case .edit(let node) = prompt {
                 Button("Move to Trash") {
                     dismiss()
-                    Task { await model.moveToTrash(node.id) }
+                    // Only the entry being edited, not the other selected rows.
+                    Task { await model.moveToTrash(ids: [node.id]) }
                 }
                 .foregroundStyle(.red)
             }
